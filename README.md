@@ -101,6 +101,16 @@ Tests use the `memory` adapter and a fake Arduino HTTP server — no hardware.
 For UHPPOTE, the project's [simulator](https://github.com/uhppoted/uhppote-simulator)
 is the on-bench integration check (see roadmap).
 
+### Arduino simulator
+
+`npm run sim` starts a faithful emulator of the legacy Open Access Arduino board
+(`sim/arduino-openaccess.mjs`) on port 9099: the real query protocol, EEPROM slot
+model, privileged-mode login with auto-logout, status JSON, and the circular event
+log (the `G/g` split on `% 32767`), plus `/sim/swipe?card=<hex>` and `/sim/state`
+to drive and inspect it. `test/sim-integration.test.ts` runs the `openaccess`
+driver against it, and it backs the end-to-end members-site tests. Point a
+controller at it with `{"driver":"openaccess","url":"http://127.0.0.1:9099","password":"1234"}`.
+
 ## Docs
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — the adapter design, the

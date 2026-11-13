@@ -16,7 +16,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "sim": "node sim/arduino-openaccess.mjs"
   },
   "dependencies": {
     "@fastify/rate-limit": "^10.0.0",
