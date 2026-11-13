@@ -15,3 +15,8 @@ Initial release.
 - OpenAccess driver verified against the firmware (26-bit Wiegand tag, mask
   1/255, slot ownership by tag, unauthenticated status, combined-login
   auto-logout, non-incremental event buffer).
+- Faithful Arduino simulator (`sim/arduino-openaccess.mjs`, `npm run sim`) and an
+  integration test that runs the `openaccess` driver against it.
+- Door-action POSTs accept a bodyless request whatever content-type a client
+  tags it with (was 415). Found during the members end-to-end run against the
+  simulator.

@@ -138,6 +138,8 @@ controller at it with `{"driver":"openaccess","url":"http://127.0.0.1:9099","pas
 - Event push: subscribe to UHPPOTE events (`uhppoted.listen`) and stream into the
   members DB, so an unknown swipe shows up instantly.
 - `POST /v1/controllers/:id/snapshot` — backup-before-change.
-- Members-site `DoorApiClient` (in progress on the members repo).
 
-Done: `cards/sync` reconcile, per-controller serialization, circuit breaker.
+Done: `cards/sync` reconcile, per-controller serialization, circuit breaker, the
+Arduino simulator + integration test, and the members-site `DoorApiClient` (on the
+`door-api-integration` branch of the members repo, verified end-to-end against the
+simulator).
