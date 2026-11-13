@@ -37,6 +37,12 @@ export async function buildServer(options: BuildOptions): Promise<FastifyInstanc
     requestTimeout: config.timeouts.server
   }).withTypeProvider<TypeBoxTypeProvider>()
 
+  // Door/action POSTs carry no body. Some HTTP clients tag a bodyless POST with a
+  // default form content-type; accept it (ignore the body) instead of 415.
+  app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_req, _body, done) => {
+    done(null, undefined)
+  })
+
   const registry = new Registry(config, options.adapters)
   const requireFn = makeRequire(config.apiKeys)
 
