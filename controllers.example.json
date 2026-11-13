@@ -1,0 +1,23 @@
+[
+  {
+    "id": "front",
+    "driver": "uhppote",
+    "serial": 405419896,
+    "address": "172.22.120.10",
+    "doors": [1, 2]
+  },
+  {
+    "id": "rear-legacy",
+    "driver": "openaccess",
+    "url": "http://172.22.110.99",
+    "password": "1234",
+    "doors": [1, 2],
+    "slotMin": 10,
+    "slotMax": 199
+  },
+  {
+    "id": "bench",
+    "driver": "memory",
+    "doors": [1, 2]
+  }
+]

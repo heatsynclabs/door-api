@@ -1,0 +1,18 @@
+services:
+  door-api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    # UHPPOTE controllers need UDP broadcast on the door LAN. For those, run on
+    # the host network (and put the host on the door VLAN):
+    #   network_mode: host
+    # For memory/openaccess-only setups, a published port is enough:
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./controllers.json:/app/controllers.json:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
