@@ -77,6 +77,15 @@ export class OpenAccessAdapter implements ControllerAdapter {
     return `${query}&e=${this.password}`
   }
 
+  // Send a privileged command. The board answers "authfail" to a wrong password
+  // (and, after 5 of them, refuses every login for 5 minutes, which would lock
+  // out any other system using the board), so that is an error, never success.
+  private async command(query: string): Promise<string> {
+    const reply = await this.get(this.authed(query))
+    if (/authfail/.test(reply)) throw new Unreachable('open access board refused the password (authfail)')
+    return reply
+  }
+
   async status(): Promise<ControllerStatus> {
     const body = await this.get('9')
     let raw: Record<string, number>
@@ -94,17 +103,17 @@ export class OpenAccessAdapter implements ControllerAdapter {
 
   async unlock(door: number): Promise<void> {
     this.assertDoor(door)
-    await this.get(this.authed(`u=${door}`))
+    await this.command(`u=${door}`)
   }
 
   async lock(door: number): Promise<void> {
     this.assertDoor(door)
-    await this.get(this.authed(`l=${door}`))
+    await this.command(`l=${door}`)
   }
 
   async open(door: number): Promise<void> {
     this.assertDoor(door)
-    await this.get(this.authed(`o${door}`))
+    await this.command(`o${door}`)
   }
 
   async listCards(): Promise<Card[]> {

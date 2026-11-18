@@ -41,7 +41,7 @@ export class CapacityFull extends DoorApiError {
 }
 
 export class DoorJobsOff extends DoorApiError {
-  constructor(message = 'door jobs are off on this server (DOOR_JOBS=off); only sandbox controllers allow this') {
+  constructor(message = 'door jobs are off on this server (DOOR_JOBS=off): a real board only takes status, open, unlock and lock here') {
     super(409, message, 'door_jobs_off')
   }
 }

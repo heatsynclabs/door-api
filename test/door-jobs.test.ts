@@ -62,11 +62,28 @@ describe('DOOR_JOBS=off (a staging copy)', () => {
     expect(await real.listCards()).toEqual([])
   })
 
-  it('still allows single door and card actions on a real board', async () => {
-    const unlock = await app.inject({ method: 'POST', url: '/v1/controllers/real/doors/1/unlock', headers: FULL })
-    expect(unlock.statusCode).toBe(200)
-    const put = await app.inject({ method: 'PUT', url: '/v1/controllers/real/cards/42', headers: FULL, payload: { doors: [1] } })
-    expect(put.statusCode).toBe(200)
+  it('allows status, open, unlock and lock on a real board', async () => {
+    for (const action of ['open', 'unlock', 'lock']) {
+      const res = await app.inject({ method: 'POST', url: `/v1/controllers/real/doors/1/${action}`, headers: FULL })
+      expect(res.statusCode).toBe(200)
+    }
+    const status = await app.inject({ method: 'GET', url: '/v1/controllers/real/status', headers: FULL })
+    expect(status.statusCode).toBe(200)
+  })
+
+  it('refuses every card read and write on a real board', async () => {
+    const calls = [
+      { method: 'GET', url: '/v1/controllers/real/cards' },
+      { method: 'GET', url: '/v1/controllers/real/cards/42' },
+      { method: 'PUT', url: '/v1/controllers/real/cards/42', payload: { doors: [1] } },
+      { method: 'DELETE', url: '/v1/controllers/real/cards/42' }
+    ] as const
+    for (const call of calls) {
+      const res = await app.inject({ ...call, headers: FULL })
+      expect(res.statusCode, `${call.method} ${call.url}`).toBe(409)
+      expect(res.json().error).toBe('door_jobs_off')
+    }
+    expect(await real.listCards()).toEqual([])
   })
 
   it('allows everything on sandbox controllers', async () => {

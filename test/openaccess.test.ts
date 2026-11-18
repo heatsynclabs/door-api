@@ -20,6 +20,7 @@ function fakeBoard(opts: { slow?: boolean } = {}): Server & { queries: string[] 
       setTimeout(() => reply('ok'), 2000)
       return
     }
+    if (/e=bad0/.test(q)) return reply('authfail\r\n')
     if (cmd === '9') return reply('{"door_1_locked":1,"door_2_locked":0}')
     if (cmd === 'a') {
       // dumpUser: slot \t mask \t TAG(hex, uppercase). firmware prints
@@ -85,6 +86,16 @@ describe('OpenAccessAdapter', () => {
   it('sends &e=PW on privileged commands', async () => {
     await adapter.unlock(1)
     expect(server.queries).toContain('u=1&e=1234')
+  })
+
+  it('treats an authfail reply (wrong password) as an error, not success', async () => {
+    const wrong = new OpenAccessAdapter(
+      { id: 'rear', driver: 'openaccess', url: (adapter as unknown as { baseUrl: string }).baseUrl, password: 'bad0', doors: [1, 2] },
+      1000
+    )
+    for (const action of ['open', 'unlock', 'lock'] as const) {
+      await expect(wrong[action](1)).rejects.toBeInstanceOf(Unreachable)
+    }
   })
 
   it('writes a new card to a FREE slot, never over a disabled card', async () => {

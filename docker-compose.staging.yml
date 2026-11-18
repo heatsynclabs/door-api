@@ -2,18 +2,26 @@
 # auto-deploys on every push to that branch. LAN, Ops VPN and tailnet only:
 #   door-api   http://172.22.110.200:3001  (docs at /docs, health at /health)
 #   simulator  http://172.22.110.200:9099  (a fake Open Access board; /sim/*)
+# How staging and production deploy, and how to ship a change: README.md,
+# "Staging and production".
 #
 # The members staging site (members repo, docker-compose.staging.yml) sends its
-# door and card actions here with DOOR_API_URL and DOOR_API_KEY.
+# door actions here with DOOR_API_URL, DOOR_API_KEY and DOOR_CONTROLLER=front.
+#
+# Controllers:
+#   front  the REAL front door board (172.22.110.99), the same board production
+#          members drives. Not a sandbox, so with DOOR_JOBS=off it only takes
+#          status, open, unlock and lock. The event log and every card read or
+#          write are refused (409 door_jobs_off): production owns those.
+#   sim    the simulator, a sandbox: everything works, for card and log tests.
 #
 # DOOR_JOBS is "off", written in this file so it cannot be switched on from
-# Coolify: event log reads, whole-table card sync and health polling only work
-# on sandbox controllers, so this copy can never repeat production's door jobs.
+# Coolify. Changing the controller list is a reviewed commit here, never a quick
+# edit in a dashboard.
 #
-# The controller list is in this file on purpose. Staging drives the simulator.
-# Pointing it at real hardware is a reviewed commit here, never a quick edit in
-# a dashboard, and must not be the production board (172.22.110.99) while
-# production members still drives it.
+# BOARD_PASSWORD must be exactly production's DOOR_ACCESS_PASSWORD. A wrong one
+# fails the board's login, and after 5 failures the board refuses every login
+# for 5 minutes, production's included.
 #
 # Values in ${...} come from the Coolify resource's environment variables.
 services:
@@ -29,7 +37,7 @@ services:
       NODE_ENV: production
       DOOR_JOBS: "off"
       API_KEYS: ${API_KEYS}
-      CONTROLLERS_JSON: '[{"id":"front","driver":"openaccess","url":"http://door-sim:9099","password":"${SIM_PASSWORD}","doors":[1,2],"sandbox":true}]'
+      CONTROLLERS_JSON: '[{"id":"front","driver":"openaccess","url":"http://172.22.110.99","password":"${BOARD_PASSWORD}","doors":[1,2]},{"id":"sim","driver":"openaccess","url":"http://door-sim:9099","password":"${SIM_PASSWORD}","doors":[1,2],"sandbox":true}]'
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s

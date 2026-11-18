@@ -118,6 +118,73 @@ controller at it with `{"driver":"openaccess","url":"http://127.0.0.1:9099","pas
 - [`docs/MEMBERS-INTEGRATION.md`](docs/MEMBERS-INTEGRATION.md) — exactly how the
   members site talks to this service (the contract, the mapping rules, rollout).
 
+## Staging and production
+
+### What runs where
+
+| Branch | Coolify app (R610, project Critical Infra) | Address | Talks to |
+|---|---|---|---|
+| `staging` | `door-api-staging` (`iuyszttidtugr71nc9yn8yvy`), environment `staging`, compose file `docker-compose.staging.yml` | `http://172.22.110.200:3001` (LAN, VPN, tailnet) | `front`: the real front door board; `sim`: the simulator |
+| `main` | none yet | | |
+
+There is no production door-api yet. Production members (`members.heatsynclabs.org`)
+still talks to the board directly. Members staging (`staging.heatsynclabs.org`) is
+the only client of door-api staging.
+
+### How a push deploys
+
+A push to `staging` on GitHub sends a webhook (repo webhook `713424114`) to
+`https://coolify.heatsynclabs.org/webhooks/source/github/events/manual`. Coolify
+checks the signature and redeploys every app whose repo and branch match, so a
+push to `staging` deploys `door-api-staging` and nothing else. Coolify builds the
+image from this repo and starts the services in `docker-compose.staging.yml`.
+Progress and logs: Coolify, project Critical Infra, environment `staging`,
+app `door-api-staging`, Deployments.
+
+### Flags and settings
+
+In `docker-compose.staging.yml` (in git, so changing them is a reviewed commit):
+
+- `DOOR_JOBS: "off"`. A second copy must never run production's door jobs. With it
+  off, a real (non-sandbox) controller only takes status, open, unlock and lock.
+  The event log, card sync and every single-card read or write answer
+  `409 door_jobs_off`, and `/health` does not poll it. Unset means on.
+- `CONTROLLERS_JSON`: `front` is the real board at `172.22.110.99`; `sim` is the
+  simulator, marked `"sandbox": true`, where everything is allowed.
+
+In Coolify, app `door-api-staging`, Environment Variables (secrets, never in git;
+the values are recorded in the ops folder `secrets/SECRETS.md`, section 2):
+
+- `API_KEYS`: the key members staging sends as `DOOR_API_KEY`.
+- `BOARD_PASSWORD`: the real board's password. Must be exactly production
+  members' `DOOR_ACCESS_PASSWORD`. A wrong one fails the board's login, and 5
+  failures lock every system out of the board for 5 minutes, production too.
+  door-api treats the board's `authfail` reply as an error.
+- `SIM_PASSWORD`: the simulator's password (not the board's).
+
+### Making a change
+
+1. Branch from `staging`, make the change, and run `npm test`, `npm run lint`,
+   `npm run typecheck` and `npm run build`. Use the simulator
+   (`npm run sim`, see above) for anything that touches a board.
+2. Merge or push to `staging`. Coolify redeploys door-api staging in a minute or two.
+3. Test through members staging (`https://staging.heatsynclabs.org`, remote door
+   access) or call the API directly with the staging key. `front` moves the real
+   front door, so tell people at the lab first. Use `sim` for card and log work.
+4. When it is right, open a pull request from `staging` to `main` and merge it.
+   Today that deploys nothing, because `main` has no Coolify app.
+
+### Going live in production (not done yet)
+
+1. Create a production Coolify app from `main` with its own compose file, with
+   `DOOR_JOBS` unset (on) and `front` pointing at the board, and point the GitHub
+   webhook at it the same way.
+2. In members production, set `DOOR_BACKEND=door_api`, `DOOR_API_URL`,
+   `DOOR_API_KEY` and `DOOR_CONTROLLER`, so production members drives the board
+   through door-api instead of directly.
+3. Only one system may run the door jobs (log import, after-hours lock, card sync).
+   Production keeps them; staging stays `DOOR_JOBS=off`.
+
 ## Security notes (read before deploying)
 
 - **Isolate the controllers.** The UHPPOTE UDP protocol is **unauthenticated and

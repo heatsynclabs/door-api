@@ -52,9 +52,11 @@ export const controllerRoutes: FastifyPluginAsyncTypebox<RouteDeps> = async (app
     return controller
   }
 
-  // The event log and whole-table sync are door jobs: with DOOR_JOBS=off only
-  // sandbox controllers allow them, so a staging copy cannot repeat them on a
-  // real board.
+  // With DOOR_JOBS=off a real board only takes status and door actions (open,
+  // unlock, lock). The event log and every card read or write are refused there,
+  // because the production system owns them: a staging copy must not read or
+  // clear the board's log, or write cards from its copied data. Sandbox
+  // controllers allow everything.
   const lookupForJob = (id: string) => {
     const controller = lookup(id)
     if (!doorJobs && !controller.sandbox) throw new DoorJobsOff()
@@ -110,7 +112,7 @@ export const controllerRoutes: FastifyPluginAsyncTypebox<RouteDeps> = async (app
       schema: { summary: 'List cards on a controller', tags: ['cards'], params: IdParams, response: { 200: Type.Array(CardSchema) } }
     },
     async (request) => {
-      const controller = lookup(request.params.id)
+      const controller = lookupForJob(request.params.id)
       return controller.run(() => controller.adapter.listCards())
     }
   )
@@ -122,7 +124,7 @@ export const controllerRoutes: FastifyPluginAsyncTypebox<RouteDeps> = async (app
       schema: { summary: 'Get one card', tags: ['cards'], params: CardParams, response: { 200: CardSchema } }
     },
     async (request) => {
-      const controller = lookup(request.params.id)
+      const controller = lookupForJob(request.params.id)
       const card = await controller.run(() => controller.adapter.getCard(request.params.card))
       if (!card) throw new NotFound(`card ${request.params.card} is not on controller "${request.params.id}"`)
       return card
@@ -136,7 +138,7 @@ export const controllerRoutes: FastifyPluginAsyncTypebox<RouteDeps> = async (app
       schema: { summary: 'Create or update a card (idempotent)', tags: ['cards'], params: CardParams, body: PutCardBody, response: { 200: Ack } }
     },
     async (request) => {
-      const controller = lookup(request.params.id)
+      const controller = lookupForJob(request.params.id)
       const body = request.body
       await controller.run(() =>
         controller.adapter.putCard({ card: request.params.card, doors: body.doors, from: body.from, to: body.to })
@@ -152,7 +154,7 @@ export const controllerRoutes: FastifyPluginAsyncTypebox<RouteDeps> = async (app
       schema: { summary: 'Remove a card', tags: ['cards'], params: CardParams, response: { 200: Ack } }
     },
     async (request) => {
-      const controller = lookup(request.params.id)
+      const controller = lookupForJob(request.params.id)
       await controller.run(() => controller.adapter.deleteCard(request.params.card))
       return { ok: true, message: `card ${request.params.card} removed` }
     }
