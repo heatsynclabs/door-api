@@ -7,12 +7,14 @@ import type { FastifyPluginAsyncTypebox } from '@fastify/type-provider-typebox'
 import type { Registry } from '../registry.js'
 import type { RequireFn } from '../auth.js'
 import { CardSchema, ControllerStatusSchema, DoorEventSchema } from '../domain.js'
-import { NotFound } from '../errors.js'
+import { DoorJobsOff, NotFound } from '../errors.js'
 import { reconcileCards } from '../reconcile.js'
 
 export interface RouteDeps {
   registry: Registry
   require: RequireFn
+  // false on a second copy (staging): see doorJobsEnabled in config.ts
+  doorJobs: boolean
 }
 
 const IdParams = Type.Object({ id: Type.String() })
@@ -42,11 +44,20 @@ const Ack = Type.Object({ ok: Type.Boolean(), message: Type.String() })
 const ControllerSummary = Type.Object({ id: Type.String(), driver: Type.String(), doors: Type.Array(Type.Integer()) })
 
 export const controllerRoutes: FastifyPluginAsyncTypebox<RouteDeps> = async (app, opts) => {
-  const { registry, require } = opts
+  const { registry, require, doorJobs } = opts
 
   const lookup = (id: string) => {
     const controller = registry.get(id)
     if (!controller) throw new NotFound(`no controller "${id}"`)
+    return controller
+  }
+
+  // The event log and whole-table sync are door jobs: with DOOR_JOBS=off only
+  // sandbox controllers allow them, so a staging copy cannot repeat them on a
+  // real board.
+  const lookupForJob = (id: string) => {
+    const controller = lookup(id)
+    if (!doorJobs && !controller.sandbox) throw new DoorJobsOff()
     return controller
   }
 
@@ -160,7 +171,7 @@ export const controllerRoutes: FastifyPluginAsyncTypebox<RouteDeps> = async (app
       }
     },
     async (request) => {
-      const controller = lookup(request.params.id)
+      const controller = lookupForJob(request.params.id)
       const { cards, prune } = request.body
       // One serialized batch: read the board once, write only the deltas.
       return controller.run(() => reconcileCards(controller.adapter, cards, prune ?? false))
@@ -180,7 +191,7 @@ export const controllerRoutes: FastifyPluginAsyncTypebox<RouteDeps> = async (app
       }
     },
     async (request) => {
-      const controller = lookup(request.params.id)
+      const controller = lookupForJob(request.params.id)
       const after = request.query.after ?? 0
       const limit = request.query.limit ?? 100
       return controller.run(() => controller.adapter.events(after, limit))

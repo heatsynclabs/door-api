@@ -7,6 +7,7 @@ import type { Registry } from '../registry.js'
 export interface HealthDeps {
   registry: Registry
   version: string
+  doorJobs: boolean
 }
 
 const ControllerHealth = Type.Object({
@@ -14,11 +15,13 @@ const ControllerHealth = Type.Object({
   driver: Type.String(),
   reachable: Type.Boolean(),
   circuit: Type.String(),
-  error: Type.Optional(Type.String())
+  error: Type.Optional(Type.String()),
+  // Set when the controller was not polled (DOOR_JOBS=off and not a sandbox).
+  skipped: Type.Optional(Type.String())
 })
 
 export const healthRoutes: FastifyPluginAsyncTypebox<HealthDeps> = async (app, opts) => {
-  const { registry, version } = opts
+  const { registry, version, doorJobs } = opts
 
   app.get(
     '/health',
@@ -31,12 +34,14 @@ export const healthRoutes: FastifyPluginAsyncTypebox<HealthDeps> = async (app, o
             status: Type.String(),
             version: Type.String(),
             uptime: Type.Number(),
+            doorJobs: Type.Boolean(),
             controllers: Type.Array(ControllerHealth)
           }),
           503: Type.Object({
             status: Type.String(),
             version: Type.String(),
             uptime: Type.Number(),
+            doorJobs: Type.Boolean(),
             controllers: Type.Array(ControllerHealth)
           })
         }
@@ -47,6 +52,11 @@ export const healthRoutes: FastifyPluginAsyncTypebox<HealthDeps> = async (app, o
         registry.all().map(async (controller) => {
           const { adapter } = controller
           const circuit = controller.circuitState()
+          // Monitoring calls this every 30 seconds: on a second copy that would
+          // be a polling job against a real board, so only sandboxes are polled.
+          if (!doorJobs && !controller.sandbox) {
+            return { id: adapter.id, driver: adapter.driver, reachable: false, circuit, skipped: 'DOOR_JOBS=off' }
+          }
           try {
             await controller.run(() => adapter.status())
             return { id: adapter.id, driver: adapter.driver, reachable: true, circuit }
@@ -55,10 +65,10 @@ export const healthRoutes: FastifyPluginAsyncTypebox<HealthDeps> = async (app, o
           }
         })
       )
-      const healthy = controllers.every((c) => c.reachable)
+      const healthy = controllers.every((c) => c.reachable || c.skipped)
       return reply
         .code(healthy ? 200 : 503)
-        .send({ status: healthy ? 'healthy' : 'degraded', version, uptime: process.uptime(), controllers })
+        .send({ status: healthy ? 'healthy' : 'degraded', version, uptime: process.uptime(), doorJobs, controllers })
     }
   )
 }

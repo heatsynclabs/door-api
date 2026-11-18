@@ -76,8 +76,11 @@ export async function buildServer(options: BuildOptions): Promise<FastifyInstanc
   })
   await app.register(swaggerUi, { routePrefix: '/docs' })
 
-  await app.register(healthRoutes, { registry, version: VERSION })
-  await app.register(controllerRoutes, { registry, require: requireFn, prefix: '/v1' })
+  if (!config.doorJobs) {
+    app.log.warn('DOOR_JOBS=off: event log reads, card sync and health polling are limited to sandbox controllers')
+  }
+  await app.register(healthRoutes, { registry, version: VERSION, doorJobs: config.doorJobs })
+  await app.register(controllerRoutes, { registry, require: requireFn, doorJobs: config.doorJobs, prefix: '/v1' })
 
   return app
 }

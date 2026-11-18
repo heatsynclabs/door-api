@@ -28,7 +28,9 @@ export class Controller {
 
   constructor(
     readonly adapter: ControllerAdapter,
-    private readonly guard: Guard
+    private readonly guard: Guard,
+    // A simulator or bench board rather than a real door.
+    readonly sandbox = false
   ) {}
 
   get id(): string {
@@ -50,8 +52,10 @@ export class Registry {
 
   constructor(config: Config, adapters?: ControllerAdapter[]) {
     const built = adapters ?? buildAdapters(config)
+    const sandboxIds = new Set(config.controllers.filter((c) => c.sandbox === true).map((c) => c.id))
     for (const adapter of built) {
-      this.controllers.set(adapter.id, new Controller(adapter, makeGuard(adapter.id, config.circuit)))
+      const sandbox = adapter.driver === 'memory' || sandboxIds.has(adapter.id)
+      this.controllers.set(adapter.id, new Controller(adapter, makeGuard(adapter.id, config.circuit), sandbox))
     }
   }
 

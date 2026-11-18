@@ -57,4 +57,21 @@ describe('config', () => {
   it('rejects malformed controller JSON shape', () => {
     expect(() => loadConfig(env({ CONTROLLERS_JSON: JSON.stringify([{ id: 'x' }]) }))).toThrow(/invalid/)
   })
+
+  it('runs door jobs unless DOOR_JOBS is off', () => {
+    expect(loadConfig(env({})).doorJobs).toBe(true)
+    expect(loadConfig(env({ DOOR_JOBS: 'on' })).doorJobs).toBe(true)
+    expect(loadConfig(env({ DOOR_JOBS: ' OFF ' })).doorJobs).toBe(false)
+  })
+
+  it('accepts a sandbox flag on a controller', () => {
+    const c = loadConfig(
+      env({
+        CONTROLLERS_JSON: JSON.stringify([
+          { id: 'sim', driver: 'openaccess', url: 'http://door-sim:9099', password: '1234', doors: [1, 2], sandbox: true }
+        ])
+      })
+    )
+    expect(c.controllers[0]?.sandbox).toBe(true)
+  })
 })

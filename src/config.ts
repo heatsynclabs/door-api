@@ -20,7 +20,9 @@ const ControllerConfigSchema = Type.Object({
   url: Type.Optional(Type.String({ description: 'Open Access Arduino base URL, e.g. http://172.22.110.99' })),
   password: Type.Optional(Type.String({ description: 'Open Access privileged-mode password (4 hex digits).' })),
   slotMin: Type.Optional(Type.Integer({ minimum: 0, maximum: 199 })),
-  slotMax: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 }))
+  slotMax: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
+  // A simulator or bench board. DOOR_JOBS=off does not restrict it.
+  sandbox: Type.Optional(Type.Boolean({ description: 'A simulator or test board, not a real door.' }))
 })
 export type ControllerConfig = Static<typeof ControllerConfigSchema>
 
@@ -31,6 +33,8 @@ export interface Config {
   port: number
   env: string
   logLevel: string
+  // False on a second copy (staging): see doorJobsEnabled.
+  doorJobs: boolean
   apiKeys: Map<string, Permission>
   controllers: ControllerConfig[]
   timeouts: {
@@ -108,12 +112,22 @@ function int(raw: string | undefined, fallback: number): number {
   return n
 }
 
+// Door jobs are the work only one system may do against a real board: reading
+// its event log, reconciling its whole card table, and the health probe that
+// polls every controller on a timer. Production leaves DOOR_JOBS unset; a
+// staging copy sets DOOR_JOBS=off. Single door and card actions still work, and
+// sandbox controllers (the memory driver, or "sandbox": true) are never limited.
+export function doorJobsEnabled(raw: string | undefined): boolean {
+  return (raw ?? '').trim().toLowerCase() !== 'off'
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     host: env.HOST ?? '0.0.0.0',
     port: int(env.PORT, 3000),
     env: env.NODE_ENV ?? 'development',
     logLevel: env.LOG_LEVEL ?? 'info',
+    doorJobs: doorJobsEnabled(env.DOOR_JOBS),
     apiKeys: parseApiKeys(env.API_KEYS),
     controllers: loadControllers(env),
     timeouts: {

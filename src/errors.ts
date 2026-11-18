@@ -39,3 +39,9 @@ export class CapacityFull extends DoorApiError {
     super(409, message, 'capacity_full')
   }
 }
+
+export class DoorJobsOff extends DoorApiError {
+  constructor(message = 'door jobs are off on this server (DOOR_JOBS=off); only sandbox controllers allow this') {
+    super(409, message, 'door_jobs_off')
+  }
+}

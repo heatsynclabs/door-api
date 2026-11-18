@@ -9,6 +9,7 @@ function testConfig(): Config {
     port: 0,
     env: 'test',
     logLevel: 'silent',
+    doorJobs: true,
     apiKeys: new Map([
       ['ro', 'readonly'],
       ['full', 'full']
