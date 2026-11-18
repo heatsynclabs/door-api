@@ -11,8 +11,11 @@
 // mask 1 -> grant, 255 -> locked out; `?9` needs no login; `?cmd&e=PW` logs in,
 // runs, and auto-logs-out; `?z` dumps the whole buffer with no cursor; a swipe
 // logs R(read) then G or D, each split into low (% 32767) and high (/ 32767).
+// `?o1` and a granted swipe pulse the lock for DOORDELAY (5 s): the relay
+// opens and logs U, then relocks and logs L, and the reported door_N_locked
+// never changes. Only `?u=` / `?l=` change what the status reports.
 //
-// Usage: node sim/arduino-openaccess.mjs   (PORT, PASSWORD, NUM_USERS, LOG_SIZE, DEBUG)
+// Usage: node sim/arduino-openaccess.mjs   (PORT, PASSWORD, NUM_USERS, LOG_SIZE, DEBUG, DOORDELAY)
 import http from 'node:http'
 
 const PORT = Number(process.env.PORT ?? 9099)
@@ -23,11 +26,14 @@ const DEBUG = Number(process.env.DEBUG ?? 2)
 const EMPTY = 0xffffffff
 const DIVISOR = 32767
 const LOGIN_LOCKOUT_MS = 5 * 60 * 1000
+const DOORDELAY = Number(process.env.DOORDELAY ?? 5000) // firmware DOORDELAY, ms
 const CRLF = '\r\n'
 
 // ---- board state ----
 const users = Array.from({ length: NUM_USERS }, () => ({ tag: EMPTY, mask: 0xff }))
-const doors = { 1: { locked: true }, 2: { locked: true } }
+// locked: what the board reports (door1Locked). open: the relay right now.
+const doors = { 1: { locked: true, open: false }, 2: { locked: true, open: false } }
+const relockTimers = { 1: null, 2: null }
 const alarm = { armed: 255, activated: 255 }
 let logKeys = new Array(LOG_SIZE).fill(0)
 let logData = new Array(LOG_SIZE).fill(0)
@@ -40,6 +46,29 @@ function addToLog(type, data) {
   logKeys[logCursor] = type
   logData[logCursor] = data
   logCursor = (logCursor + 1) % LOG_SIZE
+}
+
+// Momentary open, as the firmware does for `?o` and a granted card: unlock the
+// relay now, and when DOORDELAY passes set it back to the reported state.
+function pulseDoor(d) {
+  doors[d].open = true
+  addToLog('U', d)
+  if (relockTimers[d]) clearTimeout(relockTimers[d])
+  relockTimers[d] = setTimeout(() => {
+    relockTimers[d] = null
+    doors[d].open = !doors[d].locked
+    addToLog(doors[d].locked ? 'L' : 'U', d)
+  }, DOORDELAY)
+  relockTimers[d].unref()
+}
+
+// `?u=` / `?l=`: change the reported state and the relay together.
+function setDoor(d, locked) {
+  if (relockTimers[d]) clearTimeout(relockTimers[d])
+  relockTimers[d] = null
+  doors[d].locked = locked
+  doors[d].open = !locked
+  addToLog(locked ? 'L' : 'U', d)
 }
 
 function checkUser(tag) {
@@ -106,7 +135,7 @@ function swipe(tag, doorNum = 1) {
   if (granted) {
     addToLog('G', tag % DIVISOR)
     addToLog('g', Math.floor(tag / DIVISOR))
-    doors[doorNum].locked = false // firmware unlocks on grant
+    pulseDoor(doorNum) // firmware opens for DOORDELAY on grant
   } else {
     addToLog('D', tag % DIVISOR)
     addToLog('d', Math.floor(tag / DIVISOR))
@@ -177,33 +206,26 @@ function handleQuery(query) {
       }
       case 'o': {
         const d = q[q.indexOf('?o') + 2] === '2' ? 2 : 1
-        addToLog('U', d)
-        doors[d].locked = false
+        pulseDoor(d)
         break
       }
       case 'u': {
         const eq = q.indexOf('?u=')
         if (eq >= 0) {
-          const d = q[eq + 3] === '2' ? 2 : 1
-          doors[d].locked = false
-          addToLog('U', d)
+          setDoor(q[eq + 3] === '2' ? 2 : 1, false)
         } else {
-          doors[1].locked = false
-          doors[2].locked = false
-          addToLog('U', 3)
+          setDoor(1, false)
+          setDoor(2, false)
         }
         break
       }
       case 'l': {
         const eq = q.indexOf('?l=')
         if (eq >= 0) {
-          const d = q[eq + 3] === '2' ? 2 : 1
-          doors[d].locked = true
-          addToLog('L', d)
+          setDoor(q[eq + 3] === '2' ? 2 : 1, true)
         } else {
-          doors[1].locked = true
-          doors[2].locked = true
-          addToLog('L', 3)
+          setDoor(1, true)
+          setDoor(2, true)
         }
         break
       }
@@ -265,8 +287,12 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === '/sim/reset') {
     users.forEach((_, i) => deleteUser(i))
-    doors[1].locked = true
-    doors[2].locked = true
+    for (const d of [1, 2]) {
+      if (relockTimers[d]) clearTimeout(relockTimers[d])
+      relockTimers[d] = null
+      doors[d].locked = true
+      doors[d].open = false
+    }
     logKeys = new Array(LOG_SIZE).fill(0)
     logData = new Array(LOG_SIZE).fill(0)
     logCursor = 0
