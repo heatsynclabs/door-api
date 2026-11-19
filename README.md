@@ -174,8 +174,10 @@ the values are recorded in the ops folder `secrets/SECRETS.md`, section 2):
    access) or call the API directly with the staging key. `front` moves the real
    front door, so tell people at the lab first. Use `sim` for card and log work.
 4. When it is right, open a pull request from `staging` to `main`. Once production
-   is live, merging it deploys door-api production: do it at a quiet minute (2 to 4
-   past a 6-minute mark) and check `/log/pending` and the audit log afterwards.
+   is live, merging it deploys door-api production: do it at a quiet minute (members
+   imports the board's log on every even minute and locks at :00, :15, :30 and :45 at
+   night, so an odd minute that is not :15 or :45) and check `/log/pending` and the
+   audit log afterwards.
 
 ### Production
 
