@@ -15,8 +15,8 @@
 #   docker network create -d macvlan --subnet 172.22.110.0/24 --gateway 172.22.110.1 \
 #     --ip-range 172.22.110.240/30 -o parent=eno2 door-lan
 #
-# Nothing is published on the host. Members reaches this as
-# http://door-api-prod:3000 over door-net.
+# Members reaches this as http://door-api-prod:3000 over door-net. The only
+# host port is on the R610's loopback (127.0.0.1:3002), for operators.
 #
 # Coolify environment variables (values only in Coolify and secrets/SECRETS.md):
 #   API_KEYS                    name:key:scope entries, e.g. members-prod:<key>:full
@@ -28,6 +28,11 @@ services:
       context: .
     restart: unless-stopped
     cap_drop: [NET_RAW]
+    # Loopback only: lets an operator on the R610 run read-only checks
+    # (curl -H 'Authorization: Bearer <ops key>' 127.0.0.1:3002/...) without
+    # sudo. Nothing on the LAN, and no container, can reach it.
+    ports:
+      - "127.0.0.1:3002:3000"
     environment:
       NODE_ENV: production
       API_KEYS: ${API_KEYS}

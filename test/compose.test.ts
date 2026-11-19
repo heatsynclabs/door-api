@@ -22,11 +22,12 @@ describe('production compose files', () => {
     expect(lan).not.toContain('door-lan')
   })
 
-  it('keep the board password out of the controller JSON and publish no host port', () => {
+  it('keep the board password out of the controller JSON and publish only on loopback', () => {
     for (const f of ['docker-compose.production.yml', 'docker-compose.production-lan.yml']) {
       const s = body(f)
       expect(s).not.toMatch(/"password"/)
-      expect(s).not.toMatch(/^\s+ports:/m)
+      const published = [...s.matchAll(/^\s+- "([^"]+)"$/gm)].map((m) => m[1])
+      expect(published).toEqual(['127.0.0.1:3002:3000'])
       expect(s).not.toMatch(/DOOR_JOBS/)
       expect(s).toContain('CONTROLLER_PASSWORD_FRONT: ${CONTROLLER_PASSWORD_FRONT}')
     }
