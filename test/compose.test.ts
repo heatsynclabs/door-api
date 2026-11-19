@@ -16,7 +16,7 @@ describe('production compose files', () => {
     const lan = body('docker-compose.production-lan.yml')
     const stripped = isolated
       .replace('      door-lan:\n        ipv4_address: 172.22.110.240\n', '')
-      .replace(/  door-lan:\n    name: door-lan\n[\s\S]*$/, '')
+      .replace(/ {2}door-lan:\n {4}name: door-lan\n[\s\S]*$/, '')
     expect(stripped).toBe(lan)
     expect(isolated).toContain('ipv4_address: 172.22.110.240')
     expect(lan).not.toContain('door-lan')
