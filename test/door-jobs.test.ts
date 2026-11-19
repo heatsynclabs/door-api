@@ -27,9 +27,12 @@ function config(doorJobs: boolean): Config {
     env: 'test',
     logLevel: 'silent',
     doorJobs,
-    apiKeys: new Map([['full', 'full']]),
+    apiKeys: new Map([['full', { name: 'full', scope: 'full' as const }]]),
     controllers: [controller('real'), controller('sim', { sandbox: true }), { id: 'bench', driver: 'memory', doors: [1, 2] }],
-    timeouts: { hardware: 1000, server: 5000 },
+    timeouts: { hardware: 1000, server: 5000, doorActionDeadline: 3000 },
+    authPauseMs: 360000,
+    journalDir: null,
+    auditFile: null,
     circuit: { enabled: false, errorThresholdPercentage: 50, resetTimeout: 1000, volumeThreshold: 5 },
     uhppote: { bind: '0.0.0.0', broadcast: '255.255.255.255:60000', listen: '0.0.0.0:60001' }
   }
@@ -86,6 +89,27 @@ describe('DOOR_JOBS=off (a staging copy)', () => {
     expect(await real.listCards()).toEqual([])
   })
 
+  it('refuses the alarm, slots and the log drain on a real board', async () => {
+    const calls = [
+      { method: 'POST', url: '/v1/controllers/real/alarm/arm' },
+      { method: 'GET', url: '/v1/controllers/real/slots' },
+      { method: 'PUT', url: '/v1/controllers/real/slots/10', payload: { tag: 'AB', mask: 1 } },
+      { method: 'DELETE', url: '/v1/controllers/real/slots/10' },
+      { method: 'POST', url: '/v1/controllers/real/log/drain' }
+    ] as const
+    for (const call of calls) {
+      const res = await app.inject({ ...call, headers: FULL })
+      expect(res.statusCode, `${call.method} ${call.url}`).toBe(409)
+    }
+  })
+
+  it('allows lock-all and unlock-all on a real board (door actions)', async () => {
+    for (const action of ['unlock', 'lock']) {
+      const res = await app.inject({ method: 'POST', url: `/v1/controllers/real/doors/${action}`, headers: FULL })
+      expect(res.statusCode).toBe(200)
+    }
+  })
+
   it('allows everything on sandbox controllers', async () => {
     for (const id of ['sim', 'bench']) {
       const events = await app.inject({ method: 'GET', url: `/v1/controllers/${id}/events`, headers: FULL })
@@ -97,10 +121,10 @@ describe('DOOR_JOBS=off (a staging copy)', () => {
 
   it('health does not poll a real board', async () => {
     const before = real.statusCalls
-    const res = await app.inject({ method: 'GET', url: '/health' })
+    expect((await app.inject({ method: 'GET', url: '/health' })).json().doorJobs).toBe(false)
+    const res = await app.inject({ method: 'GET', url: '/v1/health/controllers', headers: FULL })
     expect(res.statusCode).toBe(200)
     const body = res.json()
-    expect(body.doorJobs).toBe(false)
     expect(body.controllers.find((c: { id: string }) => c.id === 'real')).toMatchObject({ skipped: 'DOOR_JOBS=off' })
     expect(body.controllers.find((c: { id: string }) => c.id === 'sim')).toMatchObject({ reachable: true })
     expect(real.statusCalls).toBe(before)
@@ -116,8 +140,9 @@ describe('DOOR_JOBS on (production)', () => {
     expect(events.statusCode).toBe(200)
     const sync = await app.inject({ method: 'POST', url: '/v1/controllers/real/cards/sync', headers: FULL, payload: SYNC })
     expect(sync.statusCode).toBe(200)
-    const health = await app.inject({ method: 'GET', url: '/health' })
-    expect(health.json().doorJobs).toBe(true)
+    expect((await app.inject({ method: 'GET', url: '/health' })).json().doorJobs).toBe(true)
+    expect(real.statusCalls).toBe(0) // liveness never touches the board
+    await app.inject({ method: 'GET', url: '/v1/health/controllers', headers: FULL })
     expect(real.statusCalls).toBe(1)
     await app.close()
   })

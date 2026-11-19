@@ -1,0 +1,57 @@
+# Production on Coolify: app door-api-production, branch `main`. BEFORE (or
+# without) isolation: the board is still on the lab LAN and this container
+# reaches it from the R610 like members does today. Switch the Coolify app to
+# docker-compose.production.yml when the board moves to its own segment, and
+# back to this file to undo that.
+#
+#   members-production ──door-net (internal)──> door-api-prod ──door-lan (macvlan on eno2)──> board 172.22.110.99
+#
+# Before the board is moved, use docker-compose.production-lan.yml (the same
+# service without door-lan; it reaches the board over the LAN). The two files
+# differ only in the door-lan network: test/compose.test.ts checks that.
+#
+# One-time host setup (sudo, on the R610), from the operations folder's
+# door cutover kit:
+#   eno2 up with no address (netplan), then
+#   docker network create --internal door-net
+#   docker network create -d macvlan --subnet 172.22.110.0/24 --gateway 172.22.110.1 \
+#     --ip-range 172.22.110.240/30 -o parent=eno2 door-lan
+#
+# Nothing is published on the host. Members reaches this as
+# http://door-api-prod:3000 over door-net.
+#
+# Coolify environment variables (values only in Coolify and secrets/SECRETS.md):
+#   API_KEYS                    name:key:scope entries, e.g. members-prod:<key>:full
+#   CONTROLLER_PASSWORD_FRONT   the board's 4-hex-digit password (members' DOOR_ACCESS_PASSWORD)
+# DOOR_JOBS is not set: production owns the board's jobs (log import, cards).
+services:
+  door-api:
+    build:
+      context: .
+    restart: unless-stopped
+    cap_drop: [NET_RAW]
+    environment:
+      NODE_ENV: production
+      API_KEYS: ${API_KEYS}
+      CONTROLLER_PASSWORD_FRONT: ${CONTROLLER_PASSWORD_FRONT}
+      CONTROLLERS_JSON: '[{"id":"front","driver":"openaccess","url":"http://172.22.110.99","doors":[1,2]}]'
+      JOURNAL_DIR: /data/journal
+      AUDIT_FILE: /data/audit/door-actions.log
+    volumes:
+      - door-api-data:/data
+    networks:
+      door-net:
+        aliases: [door-api-prod]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  door-api-data:
+
+networks:
+  door-net:
+    external: true
+    name: door-net

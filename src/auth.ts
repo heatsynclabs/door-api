@@ -1,26 +1,35 @@
-// API-key authentication with two tiers: `readonly` (status, cards, events) and
-// `full` (everything, including opening doors and writing cards). Keys come from
-// the API_KEYS env var as `key:permission` pairs.
+// API-key authentication with three scopes: `readonly` (status and reads),
+// `door` (also door actions and the alarm) and `full` (also cards and the event
+// log). Keys come from API_KEYS (see parseApiKeys in config.ts). The key's name
+// is kept on the request for the audit trail.
 import type { FastifyReply, FastifyRequest, preHandlerHookHandler } from 'fastify'
-import type { Permission } from './config.js'
+import type { ApiKey, Scope } from './config.js'
 
-const RANK: Record<Permission, number> = { readonly: 1, full: 2 }
+const RANK: Record<Scope, number> = { readonly: 1, door: 2, full: 3 }
 
-export function makeRequire(apiKeys: Map<string, Permission>) {
-  return function requirePermission(required: Permission): preHandlerHookHandler {
+declare module 'fastify' {
+  interface FastifyRequest {
+    apiKey?: ApiKey
+  }
+}
+
+export function makeRequire(apiKeys: Map<string, ApiKey>) {
+  return function requireScope(required: Scope): preHandlerHookHandler {
     return async function authenticate(request: FastifyRequest, reply: FastifyReply) {
       const header = request.headers.authorization ?? ''
       const match = /^Bearer\s+(.+)$/i.exec(header)
       const key = match?.[1]?.trim()
-      const perm = key ? apiKeys.get(key) : undefined
+      const found = key ? apiKeys.get(key) : undefined
 
-      if (!perm) {
-        request.log.warn({ event: 'auth_failed', ip: request.ip, path: request.url })
+      if (!found) {
+        request.log.warn({ event: 'auth_failed', ip: request.ip, path: request.routeOptions.url })
         return reply.code(401).send({ error: 'unauthorized', message: 'missing or invalid API key' })
       }
-      if (RANK[perm] < RANK[required]) {
-        request.log.warn({ event: 'auth_forbidden', ip: request.ip, path: request.url, permission: perm })
-        return reply.code(403).send({ error: 'forbidden', message: `this operation requires "${required}" permission` })
+      request.apiKey = found
+      // An unknown scope ranks 0: refused, never allowed by accident.
+      if ((RANK[found.scope] ?? 0) < RANK[required]) {
+        request.log.warn({ event: 'auth_forbidden', ip: request.ip, path: request.routeOptions.url, key: found.name })
+        return reply.code(403).send({ error: 'forbidden', message: `this operation requires the "${required}" scope` })
       }
       return undefined
     }

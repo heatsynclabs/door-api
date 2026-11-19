@@ -11,10 +11,12 @@ import type { ControllerAdapter } from './domain.js'
 import { Registry } from './registry.js'
 import { makeRequire } from './auth.js'
 import { DoorApiError } from './errors.js'
+import { Audit } from './audit.js'
+import { Journal } from './journal.js'
 import { controllerRoutes } from './routes/controllers.js'
 import { healthRoutes } from './routes/health.js'
 
-export const VERSION = '0.1.0'
+export const VERSION = '0.2.0'
 
 export interface BuildOptions {
   config: Config
@@ -54,11 +56,16 @@ export async function buildServer(options: BuildOptions): Promise<FastifyInstanc
     if (err.validation) {
       return reply.code(400).send({ error: 'bad_request', message: err.message })
     }
+    // Fastify's own client errors (429 rate limit, 413 too large, 400 bad JSON)
+    if (typeof err.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 500) {
+      return reply.code(err.statusCode).send({ error: err.code ?? 'client_error', message: err.message })
+    }
     request.log.error({ err }, 'unhandled error')
     return reply.code(500).send({ error: 'internal_error', message: 'unexpected error' })
   })
 
-  await app.register(rateLimit, { max: 120, timeWindow: '1 minute' })
+  // Per client address. Errors keep their own status (429, 400, 413), never 500.
+  await app.register(rateLimit, { max: 600, timeWindow: '1 minute' })
 
   await app.register(swagger, {
     openapi: {
@@ -79,8 +86,18 @@ export async function buildServer(options: BuildOptions): Promise<FastifyInstanc
   if (!config.doorJobs) {
     app.log.warn('DOOR_JOBS=off: event log reads, card sync and health polling are limited to sandbox controllers')
   }
-  await app.register(healthRoutes, { registry, version: VERSION, doorJobs: config.doorJobs })
-  await app.register(controllerRoutes, { registry, require: requireFn, doorJobs: config.doorJobs, prefix: '/v1' })
+  const audit = new Audit(config.auditFile, app.log)
+  const journal = new Journal(config.journalDir)
+  await app.register(healthRoutes, { registry, require: requireFn, version: VERSION, doorJobs: config.doorJobs })
+  await app.register(controllerRoutes, {
+    registry,
+    require: requireFn,
+    doorJobs: config.doorJobs,
+    audit,
+    journal,
+    doorActionDeadline: config.timeouts.doorActionDeadline,
+    prefix: '/v1'
+  })
 
   return app
 }
