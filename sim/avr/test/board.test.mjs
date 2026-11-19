@@ -228,19 +228,14 @@ describe('event log', () => {
     assert.ok(log.every(([k, v]) => k === '\0' && v === 0))
   })
 
-  test('the 41st entry overflows into logCursor and its value lands on keys 0 and 1', async () => {
+  test('the log is a ring of 40: the 41st entry replaces the first', async () => {
     await clearLog()
-    for (let i = 0; i < 41; i++) await get('?u') // 41 x F:2
-    let log = parseLog((await authed('z')).body)
-    // logData[40] is logKeys[0..1] in this build's RAM layout: 2 -> "\x02", "\x00"
-    assert.deepEqual(log[0], ['\x02', 2])
-    assert.deepEqual(log[1], ['\0', 2])
-    assert.ok(log.slice(2).every(([k, v]) => k === 'F' && v === 2))
-    // logKeys[40] is logCursor's low byte: 'F' + 1 > 40, so the cursor restarts at 0
-    await get('?u')
-    log = parseLog((await authed('z')).body)
-    assert.deepEqual(log[0], ['F', 2])
-    assert.deepEqual(log[1], ['\0', 2])
+    for (let i = 0; i < 40; i++) await get('?u') // 40 x F:2
+    await authed('m010&p001&t0012ABCD') // the 41st entry: a:10
+    const log = parseLog((await authed('z')).body)
+    assert.equal(log.length, 40)
+    assert.deepEqual(log[0], ['a', 10])
+    assert.ok(log.slice(1).every(([k, v]) => k === 'F' && v === 2))
   })
 })
 
@@ -249,10 +244,8 @@ describe('card swipes', () => {
   const LOCKED = 0xABC001 // slot 11, mask 255
   const NOPRIV = 0xABC002 // slot 12, mask 0
   const UNKNOWN = 0x777777
-  let strictBuild = false // built with -fno-aggressive-loop-optimizations
 
   before(async () => {
-    strictBuild = /-fno-aggressive-loop-optimizations/.test((await health()).build ?? '')
     // millis() must be past 5000: the keypad window reads a global
     // keypadTime that is never set, so it only blocks during the first 5 s.
     await resetBoard({ uptimeMs: 5200 })
@@ -297,7 +290,7 @@ describe('card swipes', () => {
     assert.deepEqual(await edges(6, t0), [])
   })
 
-  test('unknown tag: 1 s brute-force delay, then checkSuperuser', async () => {
+  test('unknown tag: 1 s brute-force delay, then denied', async () => {
     await clearLog()
     const t0 = await simNow()
     await swipe(UNKNOWN)
@@ -311,21 +304,9 @@ describe('card swipes', () => {
     assert.ok(busy > 1100, `board busy ${Math.round(busy)} ms`)
     await waitSim(t0, 6500)
     const [lo, hi] = split(UNKNOWN)
-    if (strictBuild) {
-      // What the source intends: denied.
-      assert.deepEqual(await logEntries(), [`D:${lo}`, `d:${hi}`])
-      assert.deepEqual(await edges(6, t0), [])
-    } else {
-      await waitSim(t0, 8000) // relock: read + chirp + 1 s + chirp + 5 s
-      // What `pio run -e uno` actually builds: avr-gcc 7.3 uses the
-      // superUserList[3] overrun (undefined behaviour) to assume the loop
-      // matches by i = 2, so EVERY unknown tag is a superuser and opens door 1.
-      assert.deepEqual(await logEntries(), [`G:${lo}`, `g:${hi}`, 'U:1', 'C:0', 'c:0', 'L:1'])
-      assert.deepEqual((await edges(6, t0)).map(([, v]) => v), [1, 0])
-      const highs = (await edges(9, t0)).filter(([, v]) => v === 1).map(([t]) => t)
-      assert.equal(highs.length, 2, 'read chirp, then superuser chirp')
-      assert.ok(highs[1] - highs[0] >= 1300 && highs[1] - highs[0] < 1350, `${highs[1] - highs[0]} ms between chirps`)
-    }
+    // Denied (fixed third superuser check; see the firmware's checkSuperuser).
+    assert.deepEqual(await logEntries(), [`D:${lo}`, `d:${hi}`])
+    assert.deepEqual(await edges(6, t0), [])
   })
 
   test('Wiegand: facility/card are packed into the raw 26-bit frame the firmware checks', async () => {

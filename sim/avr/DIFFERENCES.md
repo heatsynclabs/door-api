@@ -67,13 +67,11 @@ step of the lockout sequence, and the `?a` slot lines themselves.
 | Granted card (mask 1) | `G g U:1 C:0 c:0`, then `L:1` about 5 s later (the `C`/`c` is the empty keypad command) | `R r G g U:1`, then `L:1` |
 | Mask 255 | `f: 255` only | `R r D d` |
 | Mask 0 | `G g`, **door does not open** | `R r G g U:1 L:1`, door pulses |
-| Unknown card | **`G g U:1 C:0 c:0 L:1`, door opens** (see below); with `FIRMWARE_FLAGS=-fno-aggressive-loop-optimizations`, `D d` | `R r D d` |
-| 41st entry | overwrites `logCursor` and the keys of entries 0 and 1 (`\x02: 2`, `\0: 2` after 41 `F: 2`) | ring of 100, no overflow |
+| Unknown card | `D d` | `R r D d` |
+| 41st entry | replaces the first (ring of 40) | ring of 100 |
 | `?u=3` / `?o3` | nothing logged | `U: 1` |
 
-The unknown-card grant is the firmware build, not the emulator: avr-gcc 7.3
-compiles `checkSuperuser()`'s `i <= numUsers` loop over a three-entry array so
-that every tag that reaches it is "superuser 2". See the README.
+(The first comparison run was made before the third superuser check and the log bound were fixed in the firmware; the rows above show the fixed firmware.)
 
 ## Doors and alarm
 
@@ -92,8 +90,7 @@ that every tag that reaches it is "superuser 2". See the README.
   board and succeeds on the JS simulator.
 - **Timeouts.** Commands take 0.1 s to 6.2 s on the board, 1 ms on the JS
   simulator. `?2` (arm) and anything that chirps blocks the board for seconds.
-- **Mask 0 and unknown cards** behave differently from the JS simulator; the
-  PlatformIO build lets unknown cards in.
+- **Mask 0 and unknown cards** behave differently from the JS simulator.
 - **`armed`/`activated` 255 and `alarm_2`/`alarm_3` 1** in the JS simulator look
   like a capture from a real board whose EEPROM bytes 0/1 were never written (or
   were hit by `?r200`) and whose zone baselines do not match its sensors. To get

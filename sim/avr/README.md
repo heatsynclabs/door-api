@@ -11,7 +11,7 @@ and tests drive and observe the hardware side through a control API.
 
 It exists because the firmware's behaviour is in its quirks (the 97-character
 request buffer, the login and lockout rules, blocking chirps and delays, the
-40-entry log that overwrites its own cursor, slot 200 writing over the alarm
+40-entry log, slot 200 writing over the alarm
 bytes), and a rewrite only reproduces the quirks someone noticed. Here the
 quirks come from the binary.
 
@@ -45,8 +45,8 @@ and framework versions and both hashes.
 | Arg | Default | Meaning |
 |---|---|---|
 | `PASSWORD` | `0x1234` | console password, passed as `-DPRIVPASSWORD`. Typed as `?e=1234`. |
-| `FIRMWARE_FLAGS` | (empty) | extra compiler flags for a variant build, e.g. `-fno-aggressive-loop-optimizations` (see "checkSuperuser" below). Empty means exactly what `pio run -e uno` builds. |
-| `FIRMWARE_REPO`, `FIRMWARE_REF` | GitHub, `2ac92da` | source when no `firmware` build context is given |
+| `FIRMWARE_FLAGS` | (empty) | extra compiler flags for a variant build, e.g. `-fno-aggressive-loop-optimizations`. Empty means exactly what `pio run -e uno` builds. |
+| `FIRMWARE_REPO`, `FIRMWARE_REF` | GitHub, `83114ff` | source when no `firmware` build context is given |
 | `PLATFORMIO_VERSION`, `ATMELAVR_VERSION`, `TOOLCHAIN_VERSION`, `FRAMEWORK_VERSION` | 6.1.19, 5.1.0, 1.70300.191015, 5.2.0 | pinned toolchain |
 | `SIMAVR_TAG`, `SIMAVR_COMMIT` | `v1.8`, `f44723e8…` | pinned simavr release |
 
@@ -196,21 +196,11 @@ So no extra wrap model was needed; the tests check bytes 0..4 after `?m200`.
 
 Found by running the binary; all covered by tests.
 
-- **checkSuperuser grants every unknown card in this build.** The loop is
-  `for (i = 0; i <= numUsers; i++)` over a three-entry array. avr-gcc 7.3
-  (PlatformIO's toolchain) treats the read of `superUserList[3]` as undefined
-  behaviour and concludes the loop must match by `i = 2`: the compiled code
-  compares the tag with `adam` and `bob` and then returns "superuser 2"
-  without ever comparing with `carl`. Any card that is not in the EEPROM is
-  logged G/g and opens the door after the 1 s brute-force delay and a second
-  chirp. The D/d (denied) path is unreachable. The 2013 build (Arduino 1.0.3,
-  avr-gcc 4.3.2) predates `-faggressive-loop-optimizations` (GCC 4.8), so it
-  most likely compiled the loop literally and compared the fourth time with
-  whatever word follows the array; that cannot be checked here. **Do not flash
-  the PlatformIO build to a real door** until the loop is `i < numUsers`.
-  Building with `--build-arg FIRMWARE_FLAGS=-fno-aggressive-loop-optimizations`
-  restores the comparisons (it then also treats tag 0 as a superuser); the
-  swipe test checks whichever build it is given.
+- **Third superuser check (fixed in the firmware, door-controller-platformio
+  `81b6154`).** The original loop was `i <= numUsers` over a three-entry list,
+  reading one entry past its end; with avr-gcc 7.3 the third comparison was
+  compiled out. The firmware now loops `i < numUsers`, and the superuser cards
+  default to none. The swipe tests check that a card not in the EEPROM is denied.
 - **`?w` sets the clock to garbage.** It has no `break`, falls into `?x`, which
   parses `?x` that is not there, so the clock becomes 2000-00-00 with a day of
   week taken from the character `/`. `?x` itself passes the day-of-week ASCII
@@ -219,9 +209,7 @@ Found by running the binary; all covered by tests.
 - **Logout counts as a failed login.** `&e=` and `?e=0000` call `login(0)`,
   which increments the failure counter (and starts the 5-minute window if it was
   0) and answers `authfail` for `?e=0000`. A good login resets the counter.
-- **The log's 41st entry** writes its key into the low byte of `logCursor` and
-  its value over the keys of entries 0 and 1 (`logData[40]` is `logKeys[0..1]`
-  in this build's RAM layout). The cursor then restarts at 0.
+- **The log is a ring of 40** (fixed in the firmware, `61f6a22`: the original cursor could reach 40, one past the end).
 - **The keypad window only exists in the first 5 s after boot.** The local
   `keypadTime` in `processTagAccess` shadows the global, which stays 0, so the
   `millis() - keypadTime <= 5000` wait only runs before 5 s of uptime. After
@@ -265,8 +253,8 @@ board's simulated clock, so they hold when the host is slower than real time.
 | Login | bare `?u` gives "Not logged in." and logs F 2; `?e=PW` stays logged in; `?cmd&e=PW` logs out after; wrong password is exactly `authfail`; `?e=0000` logs out with `authfail` |
 | Doors | `?o1` "Opened 1.", D6 high 5000-5300 ms, status still locked, log U then L, no chirp; `?u=1` stays unlocked, 3 chirps; `?l` no chirp; `?l=1` 3 chirps of 100/200 ms; `?u` 3 chirps |
 | Users | exact replies for `?m010...`, `?a` (200 slots), `?s010`, `?r010`; EEPROM bytes; `err:query`; slot 200 writes bytes 0..4 and changes `?9` after a power cycle |
-| Log | exactly 40 lines, `?y` clears; the 41st entry corrupts keys 0 and 1 |
-| Swipes | mask 1 opens D6 ~5 s and logs G/g; mask 255 logs f; mask 0 logs G/g without opening; unknown tag blocks the board for the 1 s delay and then (this build) is granted as superuser; facility/card frames; reader 2 drives D8; tags over 26 bits refused |
+| Log | exactly 40 lines, `?y` clears; the 41st entry replaces the first |
+| Swipes | mask 1 opens D6 ~5 s and logs G/g; mask 255 logs f; mask 0 logs G/g without opening; unknown tag blocks the board for the 1 s delay and is denied; facility/card frames; reader 2 drives D8; tags over 26 bits refused |
 | Alarm | `?2` blocks 6.1-6.2 s for 20 chirps (span 5800 ms); `?1` disarms |
 | Connections | 5 simultaneous: 1 served, 4 get nothing; inside the Docker network the 4 are refused/reset at once; a 4 KB body that fills the RX buffer is answered and simulated time never runs ahead of the wall clock while `client.stop()` waits |
 | EEPROM file | the card table survives `docker stop` and a new container on the same volume |
@@ -338,8 +326,7 @@ every pass, and after `?2` (armed) four.
 
 - **Which binary is on the door.** This runs the PlatformIO build. The board on
   the wall may run a 2013 Arduino IDE 1.0.3 build. Anything that depends on code
-  generation can differ: the superuser check above, the RAM layout behind the
-  log overflow, and timing at the microsecond level.
+  generation can differ, such as timing at the microsecond level.
 - **W5100 SEND_OK and TCP details** as described above; the host's TCP stack
   shapes segments, windows and retransmissions.
 - **Refusals through Docker Desktop port forwarding** are seen by the client as

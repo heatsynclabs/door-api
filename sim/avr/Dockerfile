@@ -20,7 +20,7 @@ ARG PYTHON_IMAGE=python:3.12.7-slim-bookworm
 # Firmware source. Overridden by --build-context firmware=<dir>.
 FROM alpine/git:v2.45.2 AS firmware-git
 ARG FIRMWARE_REPO=https://github.com/heatsynclabs/door-controller-platformio.git
-ARG FIRMWARE_REF=2ac92da
+ARG FIRMWARE_REF=83114ff
 RUN git clone --quiet "$FIRMWARE_REPO" /src \
  && git -C /src checkout --quiet "$FIRMWARE_REF"
 
