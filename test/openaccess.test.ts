@@ -200,6 +200,28 @@ describe('OpenAccessAdapter safety', () => {
     server.close()
   })
 
+  it('accepts a command whose reply lacks the confirmation (with a warning), but not one whose status contradicts it', async () => {
+    const replies: Record<string, string> = {
+      'o1': 'authok\r\n', // no "Opened 1."
+      'u=1': 'authok\r\n' + status({ d1: 1 }), // status says still locked
+      'l=2': 'authok\r\n' + status({ d2: 1 }),
+      'm010': 'authok\r\n<pre>\r\nprev:\r\nweird\r\ncur:\r\nweird\r\n</pre>\r\n' // read-back not parseable
+    }
+    const server = createServer((req, res) => {
+      const cmd = ((req.url ?? '').split('?')[1] ?? '').split('&')[0]!
+      res.end(replies[cmd] ?? 'authok\r\n')
+    })
+    const warnings: string[] = []
+    const adapter = new OpenAccessAdapter(cfg(await listen(server)), { timeoutMs: 1000, onWarn: (m) => warnings.push(m) })
+    await adapter.open(1)
+    expect(warnings).toHaveLength(1)
+    await expect(adapter.unlock(1)).rejects.toBeInstanceOf(BadReply)
+    await adapter.lock(2)
+    await adapter.writeSlot(10, 1, 'AB')
+    expect(warnings).toHaveLength(2)
+    server.close()
+  })
+
   it('refuses card-number reads when the firmware masks tags, but slot writes still work', async () => {
     const board = fakeBoard({ debug: 1 })
     const adapter = new OpenAccessAdapter(cfg(await listen(board)), 1000)

@@ -80,8 +80,8 @@ export class Controller {
 export class Registry {
   private readonly controllers = new Map<string, Controller>()
 
-  constructor(config: Config, adapters?: ControllerAdapter[]) {
-    const built = adapters ?? buildAdapters(config)
+  constructor(config: Config, adapters?: ControllerAdapter[], warn: Warn = () => undefined) {
+    const built = adapters ?? buildAdapters(config, warn)
     const byId = new Map<string, ControllerConfig>(config.controllers.map((c) => [c.id, c]))
     for (const adapter of built) {
       const cfg = byId.get(adapter.id)
@@ -106,13 +106,15 @@ export class Registry {
   }
 }
 
-function buildAdapters(config: Config): ControllerAdapter[] {
+type Warn = (message: string, detail: Record<string, unknown>) => void
+
+function buildAdapters(config: Config, warn: Warn): ControllerAdapter[] {
   return config.controllers.map((cfg) => {
     switch (cfg.driver) {
       case 'uhppote':
         return new UhppoteAdapter(cfg, config.uhppote, config.timeouts.hardware)
       case 'openaccess':
-        return new OpenAccessAdapter(cfg, { timeoutMs: config.timeouts.hardware, authPauseMs: config.authPauseMs })
+        return new OpenAccessAdapter(cfg, { timeoutMs: config.timeouts.hardware, authPauseMs: config.authPauseMs, onWarn: warn })
       case 'memory':
         return new MemoryAdapter(cfg)
       default:

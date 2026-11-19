@@ -53,6 +53,9 @@ export interface OpenAccessOptions {
   slowTimeoutMs?: number
   authPauseMs?: number
   now?: () => number
+  // Called when the board accepted a command but its reply lacked the expected
+  // confirmation (the deployed firmware may print differently from the repo).
+  onWarn?: (message: string, detail: Record<string, unknown>) => void
 }
 
 export class OpenAccessAdapter implements ControllerAdapter {
@@ -67,6 +70,7 @@ export class OpenAccessAdapter implements ControllerAdapter {
   private readonly slowTimeout: number
   private readonly authPauseMs: number
   private readonly now: () => number
+  private readonly onWarn: (message: string, detail: Record<string, unknown>) => void
   private pausedUntil = 0
 
   constructor(cfg: ControllerConfig, options: OpenAccessOptions | number) {
@@ -82,6 +86,7 @@ export class OpenAccessAdapter implements ControllerAdapter {
     this.slowTimeout = Math.max(opts.slowTimeoutMs ?? 30_000, opts.timeoutMs)
     this.authPauseMs = opts.authPauseMs ?? 6 * 60_000
     this.now = opts.now ?? Date.now
+    this.onWarn = opts.onWarn ?? (() => undefined)
   }
 
   private async get(query: string, timeoutMs = this.timeout): Promise<string> {
@@ -116,8 +121,19 @@ export class OpenAccessAdapter implements ControllerAdapter {
     return reply
   }
 
-  private expect(reply: string, pattern: RegExp, what: string): void {
-    if (!pattern.test(reply)) throw new BadReply(`open access board did not confirm ${what}`)
+  // Check a command's reply. The command already passed the login check (authok,
+  // no err:), so the board ran it. If the reply carries the board's status block,
+  // it must show the expected state: a contradiction is an error. If the expected
+  // message is simply missing, the command is accepted (the direct path never
+  // checked replies at all) and a warning records the reply's shape.
+  private confirm(reply: string, what: string, message: RegExp | null, state?: (s: Record<string, number>) => boolean): void {
+    if (message && message.test(reply)) return
+    const s = statusBlock(reply)
+    if (s && state) {
+      if (state(s)) return
+      throw new BadReply(`open access board status after ${what} does not show it done`)
+    }
+    this.onWarn('open access board reply had no confirmation; accepted', { controller: this.id, action: what, reply: shape(reply) })
   }
 
   async status(): Promise<ControllerStatus> {
@@ -139,34 +155,34 @@ export class OpenAccessAdapter implements ControllerAdapter {
 
   async unlock(door: number): Promise<void> {
     this.assertDoor(door)
-    this.expect(await this.command(`u=${door}`), new RegExp(`Unlocked ${door}\\.`), `unlocking door ${door}`)
+    this.confirm(await this.command(`u=${door}`), `unlock ${door}`, new RegExp(`Unlocked ${door}\\.`), (s) => s[`door_${door}_locked`] === 0)
   }
 
   // ?l=<d> prints no message, only the status, which must show the door locked.
   async lock(door: number): Promise<void> {
     this.assertDoor(door)
-    this.expect(await this.command(`l=${door}`), new RegExp(`"door_${door}_locked":1\\b`), `locking door ${door}`)
+    this.confirm(await this.command(`l=${door}`), `lock ${door}`, null, (s) => s[`door_${door}_locked`] === 1)
   }
 
   async open(door: number): Promise<void> {
     this.assertDoor(door)
-    this.expect(await this.command(`o${door}`), new RegExp(`Opened ${door}\\.`), `opening door ${door}`)
+    this.confirm(await this.command(`o${door}`), `open ${door}`, new RegExp(`Opened ${door}\\.`))
   }
 
   async lockAll(): Promise<void> {
-    this.expect(await this.command('l'), /Locked all\./, 'locking all doors')
+    this.confirm(await this.command('l'), 'lock all', /Locked all\./, (s) => this.doors.every((d) => s[`door_${d}_locked`] === 1))
   }
 
   async unlockAll(): Promise<void> {
-    this.expect(await this.command('u'), /Unlocked all\./, 'unlocking all doors')
+    this.confirm(await this.command('u'), 'unlock all', /Unlocked all\./, (s) => this.doors.every((d) => s[`door_${d}_locked`] === 0))
   }
 
   async arm(): Promise<void> {
-    this.expect(await this.command('2'), /"armed":1\b/, 'arming the alarm')
+    this.confirm(await this.command('2'), 'arm', null, (s) => s.armed === 1)
   }
 
   async disarm(): Promise<void> {
-    this.expect(await this.command('1'), /"armed":0\b/, 'disarming the alarm')
+    this.confirm(await this.command('1'), 'disarm', null, (s) => s.armed === 0)
   }
 
   async listSlots(): Promise<{ slots: SlotEntry[]; masked: boolean }> {
@@ -183,17 +199,28 @@ export class OpenAccessAdapter implements ControllerAdapter {
     const reply = await this.command(`m${pad3(slot)}&p${pad3(mask)}&t${tag8}`)
     const change = parseSlotChange(reply)
     const cur = change.cur
-    if (!cur || cur.slot !== slot || cur.mask !== mask || (cur.tag != null && Number.parseInt(cur.tag, 16) !== Number.parseInt(tag8, 16))) {
-      throw new BadReply(`open access board did not confirm the write to slot ${slot}`)
+    if (!cur) {
+      // "cur:" is there (parseSlotChange checked) but the entry is not in the
+      // expected form: the direct path accepts exactly this, so accept and warn.
+      this.onWarn('slot write read-back not parsed; accepted on "cur:"', { controller: this.id, slot, reply: shape(reply) })
+      return change
+    }
+    if (cur.slot !== slot || cur.mask !== mask || (cur.tag != null && Number.parseInt(cur.tag, 16) !== Number.parseInt(tag8, 16))) {
+      throw new BadReply(`open access board read back something else for slot ${slot}`)
     }
     return change
   }
 
   async clearSlot(slot: number): Promise<SlotChange> {
     this.assertSlot(slot)
-    const change = parseSlotChange(await this.command(`r${pad3(slot)}`))
-    if (!change.cur || change.cur.slot !== slot || !change.cur.empty || change.cur.mask !== DISABLED_MASK) {
-      throw new BadReply(`open access board did not confirm clearing slot ${slot}`)
+    const reply = await this.command(`r${pad3(slot)}`)
+    const change = parseSlotChange(reply)
+    if (!change.cur) {
+      this.onWarn('slot clear read-back not parsed; accepted on "cur:"', { controller: this.id, slot, reply: shape(reply) })
+      return change
+    }
+    if (change.cur.slot !== slot || !change.cur.empty || change.cur.mask !== DISABLED_MASK) {
+      throw new BadReply(`open access board read back slot ${slot} as not empty`)
     }
     return change
   }
@@ -203,12 +230,13 @@ export class OpenAccessAdapter implements ControllerAdapter {
   async readLog(): Promise<string> {
     const reply = await this.command('z', this.slowTimeout)
     const start = reply.indexOf('<pre>')
-    if (start < 0 || reply.indexOf('</pre>', start) < 0) throw new BadReply('open access board returned no event log')
-    return reply.slice(start)
+    if (start >= 0) return reply.slice(start)
+    this.onWarn('event log reply had no <pre>; returned after the login line', { controller: this.id, reply: shape(reply) })
+    return reply.slice(reply.indexOf('authok') + 'authok'.length).replace(/^\r?\n/, '')
   }
 
   async clearLog(): Promise<void> {
-    this.expect(await this.command('y'), /(^|\n)y\r?\n/, 'clearing the event log')
+    this.confirm(await this.command('y'), 'clear log', /(^|\n)y\r?\n/)
   }
 
   // ---- card-number API (reads the slot table; needs unmasked tags) ----
@@ -290,6 +318,22 @@ export class OpenAccessAdapter implements ControllerAdapter {
   private slotToCard(s: SlotEntry): Card {
     return { card: tagNumber(s), doors: s.mask === DISABLED_MASK ? [] : this.doors }
   }
+}
+
+// The board's status block inside a command reply, if it printed one.
+function statusBlock(reply: string): Record<string, number> | null {
+  const m = /\{[^{}]*"door_1_locked"[^{}]*\}/.exec(reply)
+  if (!m) return null
+  try {
+    return JSON.parse(m[0]) as Record<string, number>
+  } catch {
+    return null
+  }
+}
+
+// A reply's shape for a log line: no card numbers (hex runs become #), short.
+function shape(reply: string): string {
+  return reply.replace(/[0-9A-Fa-f]{5,}/g, '#').replace(/\r/g, '\\r').replace(/\n/g, '\\n').slice(0, 160)
 }
 
 function tagNumber(s: SlotEntry): number {

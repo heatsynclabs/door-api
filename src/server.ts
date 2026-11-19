@@ -45,7 +45,7 @@ export async function buildServer(options: BuildOptions): Promise<FastifyInstanc
     done(null, undefined)
   })
 
-  const registry = new Registry(config, options.adapters)
+  const registry = new Registry(config, options.adapters, (message, detail) => app.log.warn(detail, message))
   const requireFn = makeRequire(config.apiKeys)
 
   app.setErrorHandler((err: FastifyError, request, reply) => {
