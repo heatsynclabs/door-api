@@ -125,11 +125,13 @@ controller at it with `{"driver":"openaccess","url":"http://127.0.0.1:9099","pas
 | Branch | Coolify app (R610, project Critical Infra) | Address | Talks to |
 |---|---|---|---|
 | `staging` | `door-api-staging` (`iuyszttidtugr71nc9yn8yvy`), environment `staging`, compose file `docker-compose.staging.yml` | `http://172.22.110.200:3001` (LAN, VPN, tailnet) | `front`: the real front door board; `sim`: the simulator |
-| `main` | none yet | | |
+| `main` | `door-api-production` (`rormaiwrtppwwxc1mskrbk01`), environment `production`, compose file `docker-compose.production-lan.yml`, later `docker-compose.production.yml` | no LAN port; members reaches `http://door-api-prod:3000` on the internal `door-net` network; operators use `127.0.0.1:3002` on the R610 | `front`: the real front door board |
 
-There is no production door-api yet. Production members (`members.heatsynclabs.org`)
-still talks to the board directly. Members staging (`staging.heatsynclabs.org`) is
-the only client of door-api staging.
+`door-api-production` exists in Coolify (created 2026-11-18) but is not deployed:
+it goes live in the door cutover (operations folder,
+`reference/door-cutover-runbook.md`, driven by `tools/door-cutover/go.py`). Until then
+production members talks to the board directly, and members staging is the only
+client of door-api staging.
 
 ### How a push deploys
 
@@ -156,7 +158,7 @@ In Coolify, app `door-api-staging`, Environment Variables (secrets, never in git
 the values are recorded in the ops folder `secrets/SECRETS.md`, section 2):
 
 - `API_KEYS`: the key members staging sends as `DOOR_API_KEY`.
-- `BOARD_PASSWORD`: the real board's password. Must be exactly production
+- `BOARD_PASSWORD` (until the cutover; deleted by `go.py staging-to-sim`): the real board's password. Must be exactly production
   members' `DOOR_ACCESS_PASSWORD`. A wrong one fails the board's login, and 5
   failures lock every system out of the board for 5 minutes, production too.
   door-api treats the board's `authfail` reply as an error.
@@ -171,19 +173,32 @@ the values are recorded in the ops folder `secrets/SECRETS.md`, section 2):
 3. Test through members staging (`https://staging.heatsynclabs.org`, remote door
    access) or call the API directly with the staging key. `front` moves the real
    front door, so tell people at the lab first. Use `sim` for card and log work.
-4. When it is right, open a pull request from `staging` to `main` and merge it.
-   Today that deploys nothing, because `main` has no Coolify app.
+4. When it is right, open a pull request from `staging` to `main`. Once production
+   is live, merging it deploys door-api production: do it at a quiet minute (2 to 4
+   past a 6-minute mark) and check `/log/pending` and the audit log afterwards.
 
-### Going live in production (not done yet)
+### Production
 
-1. Create a production Coolify app from `main` with its own compose file, with
-   `DOOR_JOBS` unset (on) and `front` pointing at the board, and point the GitHub
-   webhook at it the same way.
-2. In members production, set `DOOR_BACKEND=door_api`, `DOOR_API_URL`,
-   `DOOR_API_KEY` and `DOOR_CONTROLLER`, so production members drives the board
-   through door-api instead of directly.
-3. Only one system may run the door jobs (log import, after-hours lock, card sync).
-   Production keeps them; staging stays `DOOR_JOBS=off`.
+- **Compose files.** `docker-compose.production-lan.yml` reaches the board over the
+  lab LAN (before isolation, and the rollback). `docker-compose.production.yml` adds
+  the `door-lan` macvlan network on the R610's eno2 with door-api at 172.22.110.240:
+  the board's private segment. `test/compose.test.ts` keeps the two identical apart
+  from that network. Switching is a change of the app's compose file location and a
+  redeploy (`go.py isolate`, `go.py rollback isolation`).
+- **Networks** (created once on the R610 by the operations folder's
+  `tools/door-cutover/r610-prep.sh`): `door-net` (internal; members production joins
+  it) and `door-lan` (macvlan, parent eno2).
+- **Environment** (Coolify; values in the operations folder `secrets/SECRETS.md`):
+  `API_KEYS` (`members-prod:<key>:full,ops-readonly:<key>:readonly`) and
+  `CONTROLLER_PASSWORD_FRONT` (the board's password, the same value as members'
+  `DOOR_ACCESS_PASSWORD`). `DOOR_JOBS` is unset: production owns the board's jobs.
+- **Data volume** `door-api-data` at `/data`: the event-log journal (`/data/journal`)
+  and the audit log (`/data/audit/door-actions.log`).
+- **Checks on the R610** without sudo:
+  `curl -H "Authorization: Bearer <ops-readonly key>" http://127.0.0.1:3002/v1/controllers/front/status`
+  (also `/slots`, `/log/pending`). `/health` is liveness only and never touches the board.
+- **A push to `main` deploys production door-api** (same webhook). Its commit pin
+  must be `HEAD`; `go.py` sets it.
 
 ## Security notes (read before deploying)
 
