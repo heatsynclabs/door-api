@@ -29,7 +29,7 @@ async function waitForSim(): Promise<void> {
 
 describe('OpenAccessAdapter against the Arduino simulator', () => {
   beforeAll(async () => {
-    sim = spawn('node', [SIM], { env: { ...process.env, PORT: String(PORT), PASSWORD: '1234' }, stdio: 'ignore' })
+    sim = spawn('node', [SIM], { env: { ...process.env, PORT: String(PORT), PASSWORD: '1234', DOORDELAY: '300' }, stdio: 'ignore' })
     await waitForSim()
     adapter = new OpenAccessAdapter(
       { id: 'sim', driver: 'openaccess', url: BASE, password: '1234', doors: [1, 2] },
@@ -71,6 +71,18 @@ describe('OpenAccessAdapter against the Arduino simulator', () => {
     expect((await adapter.status()).doors.find((d) => d.door === 1)?.locked).toBe(false)
     await adapter.lock(1)
     expect((await adapter.status()).doors.find((d) => d.door === 1)?.locked).toBe(true)
+  })
+
+  it('opens a door for DOORDELAY and relocks it, like the firmware', async () => {
+    const door1 = async () => ((await (await fetch(`${BASE}/sim/state`)).json()) as {
+      doors: Record<string, { locked: boolean; open: boolean }>
+    }).doors['1']
+    await adapter.open(1)
+    // The relay is open, but the board still reports the door as locked.
+    expect(await door1()).toEqual({ locked: true, open: true })
+    expect((await adapter.status()).doors.find((d) => d.door === 1)?.locked).toBe(true)
+    await new Promise((r) => setTimeout(r, 600))
+    expect(await door1()).toEqual({ locked: true, open: false })
   })
 
   it('deletes a card', async () => {

@@ -1,44 +1,80 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { OpenAccessAdapter } from '../src/adapters/openaccess.js'
-import { Unreachable } from '../src/errors.js'
+import { OpenAccessAdapter, normaliseTag, parseSlotChange, parseSlotDump } from '../src/adapters/openaccess.js'
+import { BadReply, BadRequest, BoardAuthFailed, NotSupported, Unreachable } from '../src/errors.js'
 
-// A fake Open Access board: answers the query protocol the way the firmware
-// does, and records the queries it received so tests can assert on them.
-function fakeBoard(opts: { slow?: boolean } = {}): Server & { queries: string[] } {
+// The firmware's exact reply bytes (src/main.cpp in door-controller-platformio):
+// printStatus(), dumpUser(), printLog(), and the PROGMEM messages, which are
+// printed without a line break.
+const status = (s: { armed?: number; d1?: number; d2?: number } = {}) =>
+  `{\r\n"armed":${s.armed ?? 0},"activated":0\r\n,"alarm_3":0\r\n,"alarm_2":0\r\n,"door_1_locked":${s.d1 ?? 1}\r\n,"door_2_locked":${s.d2 ?? 1}\r\n}\r\n`
+
+function dump(slot: number, mask: number, tag: number, debug: number): string {
+  const head = `${slot}\t${mask}\t`
+  if (debug === 2) return `${head}${tag.toString(16).toUpperCase()}\r\n`
+  return tag === 0xffffffff ? head : `${head}********\r\n`
+}
+
+// A fake board answering the query protocol the way the firmware does, with an
+// EEPROM-like slot table, and recording every query it received.
+function fakeBoard(opts: { debug?: number; slow?: boolean; password?: string } = {}) {
+  const debug = opts.debug ?? 2
+  const password = opts.password ?? '1234'
   const queries: string[] = []
+  const slots = new Map<number, { mask: number; tag: number }>()
+  const slot = (n: number) => slots.get(n) ?? { mask: 255, tag: 0xffffffff }
+  let log: string[] = []
   const server = createServer((req, res) => {
     const q = (req.url ?? '').split('?')[1] ?? ''
     queries.push(q)
-    const cmd = q[0]
-    const reply = (text: string) => {
-      res.writeHead(200, { 'content-type': 'text/plain' })
+    const send = (text: string) => {
+      res.writeHead(200, { 'Cache-Control': 'no-store', 'Content-Type': 'text/html' })
       res.end(text)
     }
-    if (opts.slow) {
-      setTimeout(() => reply('ok'), 2000)
-      return
+    if (opts.slow) return void setTimeout(() => send('late'), 2000)
+    if (q === '9') return send(status())
+    const pw = /&e=([0-9A-Fa-f]{4})/.exec(q)?.[1]
+    if (!pw) return send("<a href='/'>Not logged in.</a>")
+    if (pw !== password) return send('authfail\r\n')
+    let out = 'authok\r\n'
+    const cmd = q.split('&')[0]!
+    if (cmd === 'u=1') out += 'Unlocked 1.' + status({ d1: 0 })
+    else if (cmd === 'l=1') out += status({ d1: 1 })
+    else if (cmd === 'o1') out += 'Opened 1.'
+    else if (cmd === 'l') out += 'Locked all.' + status()
+    else if (cmd === 'u') out += 'Unlocked all.' + status({ d1: 0, d2: 0 })
+    else if (cmd === '2') out += status({ armed: 1 })
+    else if (cmd === '1') out += status({ armed: 0 })
+    else if (cmd === 'a') {
+      out += '<pre>\r\nUserNum: Usermask: TagNum:\r\n'
+      for (let i = 0; i < 200; i += 1) out += dump(i, slot(i).mask, slot(i).tag, debug)
+      out += '</pre>\r\n'
+    } else if (/^m\d{3}$/.test(cmd)) {
+      const n = Number(cmd.slice(1))
+      const m = /&p(\d{3})&t([0-9A-Fa-f]{8})/.exec(q)
+      if (!m) out += 'err:query\r\n'
+      else {
+        out += '<pre>\r\nprev:\r\n' + dump(n, slot(n).mask, slot(n).tag, debug)
+        slots.set(n, { mask: Number(m[1]), tag: Number.parseInt(m[2]!, 16) })
+        out += 'cur:\r\n' + dump(n, slot(n).mask, slot(n).tag, debug) + '</pre>\r\n'
+      }
+    } else if (/^r\d{3}$/.test(cmd)) {
+      const n = Number(cmd.slice(1))
+      out += 'r\r\n<pre>\r\nprev:\r\n' + dump(n, slot(n).mask, slot(n).tag, debug)
+      slots.delete(n)
+      out += 'cur:\r\n' + dump(n, slot(n).mask, slot(n).tag, debug)
+    } else if (cmd === 'z') {
+      out += '<pre>\r\n'
+      for (let i = 0; i < 40; i += 1) out += log[i] ?? '\u0000: 0\r\n'
+      out += '</pre>\r\n'
+    } else if (cmd === 'y') {
+      log = []
+      out += 'y\r\n'
     }
-    if (cmd === '9') return reply('{"door_1_locked":1,"door_2_locked":0}')
-    if (cmd === 'a') {
-      // dumpUser: slot \t mask \t TAG(hex, uppercase). firmware prints
-      // enabled (mask 1), disabled (mask 255 + real tag), empty (tag 0 / FFFFFFFF).
-      return reply(
-        '<pre>UserNum: Usermask: TagNum:\n' +
-          '10\t1\tFF\n' + // enabled, tag 0xff
-          '11\t255\tBEEF\n' + // DISABLED but a real tag -> still occupies slot 11
-          '12\t255\tFFFFFFFF\n' + // empty/deleted
-          '13\t1\t0\n' + // empty
-          '</pre>'
-      )
-    }
-    if (cmd === 'm') return reply('<pre>prev:\ncur:\n</pre>')
-    if (cmd === 'r') return reply('r\n<pre>prev:\ncur:\n</pre>')
-    if (cmd === 'z') return reply('G: 100\r\nD: 101\r\n')
-    return reply('ok')
+    send(out)
   })
-  return Object.assign(server, { queries })
+  return Object.assign(server, { queries, slots, setLog: (l: string[]) => (log = l) })
 }
 
 async function listen(server: Server): Promise<string> {
@@ -47,81 +83,251 @@ async function listen(server: Server): Promise<string> {
   return `http://127.0.0.1:${port}`
 }
 
-describe('OpenAccessAdapter', () => {
-  let server: Server & { queries: string[] }
+const cfg = (url: string, password = '1234') => ({ id: 'front', driver: 'openaccess' as const, url, password, doors: [1, 2] })
+
+describe('OpenAccessAdapter (firmware replies)', () => {
+  let board: ReturnType<typeof fakeBoard>
   let adapter: OpenAccessAdapter
 
   beforeAll(async () => {
-    server = fakeBoard()
-    const url = await listen(server)
-    adapter = new OpenAccessAdapter(
-      { id: 'rear', driver: 'openaccess', url, password: '1234', doors: [1, 2] },
-      1000
-    )
+    board = fakeBoard()
+    adapter = new OpenAccessAdapter(cfg(await listen(board)), 1000)
   })
-  afterAll(() => {
+  afterAll(() => board.close())
+  beforeEach(() => {
+    board.queries.length = 0
+  })
+
+  it('reads status without a password', async () => {
+    const s = await adapter.status()
+    expect(s.doors).toEqual([
+      { door: 1, locked: true },
+      { door: 2, locked: true }
+    ])
+    expect(s.details).toEqual({ armed: 0, activated: 0, alarm_3: 0, alarm_2: 0, door_1_locked: 1, door_2_locked: 1 })
+    expect(Object.keys(s.details!)).toEqual(['armed', 'activated', 'alarm_3', 'alarm_2', 'door_1_locked', 'door_2_locked'])
+    expect(board.queries).toEqual(['9'])
+  })
+
+  it('sends each door command as one request with &e=, the way members did', async () => {
+    await adapter.open(1)
+    await adapter.unlock(1)
+    await adapter.lock(1)
+    await adapter.lockAll()
+    await adapter.unlockAll()
+    await adapter.arm()
+    await adapter.disarm()
+    expect(board.queries).toEqual(['o1&e=1234', 'u=1&e=1234', 'l=1&e=1234', 'l&e=1234', 'u&e=1234', '2&e=1234', '1&e=1234'])
+  })
+
+  it('writes a slot exactly as members upload_query does, and checks the board read it back', async () => {
+    const change = await adapter.writeSlot(10, 1, '12abcd')
+    expect(board.queries).toEqual(['m010&p001&t0012ABCD&e=1234'])
+    expect(change.prev).toEqual({ slot: 10, mask: 255, tag: 'FFFFFFFF', empty: true })
+    expect(change.cur).toEqual({ slot: 10, mask: 1, tag: '12ABCD', empty: false })
+    await adapter.writeSlot(10, 255, '12ABCD')
+    expect(board.queries[1]).toBe('m010&p255&t0012ABCD&e=1234')
+  })
+
+  it('clears a slot and checks it is empty', async () => {
+    await adapter.writeSlot(11, 1, 'BEEF')
+    const change = await adapter.clearSlot(11)
+    expect(board.queries.at(-1)).toBe('r011&e=1234')
+    expect(change.cur).toEqual({ slot: 11, mask: 255, tag: 'FFFFFFFF', empty: true })
+  })
+
+  it('lists all 200 slots', async () => {
+    await adapter.writeSlot(12, 1, 'ABC')
+    const { slots, masked } = await adapter.listSlots()
+    expect(masked).toBe(false)
+    expect(slots).toHaveLength(200)
+    expect(slots[12]).toEqual({ slot: 12, mask: 1, tag: 'ABC', empty: false })
+    expect(slots[13]).toEqual({ slot: 13, mask: 255, tag: 'FFFFFFFF', empty: true })
+  })
+
+  it('refuses slot 200 and above, and the "no card" tags', async () => {
+    await expect(adapter.writeSlot(200, 1, 'AB')).rejects.toBeInstanceOf(BadRequest)
+    await expect(adapter.writeSlot(10, 1, 'FFFFFFFF')).rejects.toBeInstanceOf(BadRequest)
+    await expect(adapter.writeSlot(10, 1, '0')).rejects.toBeInstanceOf(BadRequest)
+    await expect(adapter.writeSlot(10, 1, '12&e=0')).rejects.toBeInstanceOf(BadRequest)
+    expect(board.queries).toEqual([])
+  })
+
+  it('returns the event log from <pre> on, byte for byte, and clears it', async () => {
+    board.setLog(['U: 1\r\n', 'L: 1\r\n', 'G: 1234\r\n', 'g: 5\r\n'])
+    const raw = await adapter.readLog()
+    expect(raw.startsWith('<pre>\r\nU: 1\r\nL: 1\r\nG: 1234\r\ng: 5\r\n\u0000: 0\r\n')).toBe(true)
+    expect(raw.endsWith('</pre>\r\n')).toBe(true)
+    expect(raw).not.toContain('authok')
+    await adapter.clearLog()
+    expect(board.queries).toEqual(['z&e=1234', 'y&e=1234'])
+  })
+
+  it('works with the card-number API when tags are visible', async () => {
+    await adapter.putCard({ card: 0xabcd, doors: [1, 2] })
+    expect(await adapter.getCard(0xabcd)).toEqual({ card: 0xabcd, doors: [1, 2] })
+    await adapter.deleteCard(0xabcd)
+    expect(await adapter.getCard(0xabcd)).toBeNull()
+  })
+})
+
+describe('OpenAccessAdapter safety', () => {
+  it('pauses every privileged call after one refused password, and keeps status working', async () => {
+    const board = fakeBoard({ password: '9999' })
+    let now = 1_000_000
+    const adapter = new OpenAccessAdapter(cfg(await listen(board)), { timeoutMs: 1000, authPauseMs: 360_000, now: () => now })
+    await expect(adapter.unlock(1)).rejects.toBeInstanceOf(BoardAuthFailed)
+    await expect(adapter.open(1)).rejects.toBeInstanceOf(BoardAuthFailed)
+    await expect(adapter.readLog()).rejects.toBeInstanceOf(BoardAuthFailed)
+    expect(board.queries).toEqual(['u=1&e=1234']) // one failed login, not five
+    expect(adapter.authPausedUntil()).toBe(1_360_000)
+    await adapter.status()
+    now += 360_001
+    expect(adapter.authPausedUntil()).toBeNull()
+    await expect(adapter.unlock(1)).rejects.toBeInstanceOf(BoardAuthFailed)
+    expect(board.queries).toEqual(['u=1&e=1234', '9', 'u=1&e=1234'])
+    board.close()
+  })
+
+  it('treats replies without authok, or with err:, as bad replies', async () => {
+    const server = createServer((req, res) => {
+      const q = (req.url ?? '').split('?')[1] ?? ''
+      res.end(q.startsWith('m') ? 'authok\r\nerr:query\r\n' : "<a href='/'>Not logged in.</a>")
+    })
+    const adapter = new OpenAccessAdapter(cfg(await listen(server)), 1000)
+    await expect(adapter.unlock(1)).rejects.toBeInstanceOf(BadReply)
+    await expect(adapter.writeSlot(10, 1, 'AB')).rejects.toBeInstanceOf(BadReply)
     server.close()
   })
 
-  it('reads door lock status without authenticating', async () => {
-    const status = await adapter.status()
-    expect(status.online).toBe(true)
-    expect(status.doors).toEqual([
-      { door: 1, locked: true },
-      { door: 2, locked: false }
+  it('accepts a command whose reply lacks the confirmation (with a warning), but not one whose status contradicts it', async () => {
+    const replies: Record<string, string> = {
+      'o1': 'authok\r\n', // no "Opened 1."
+      'u=1': 'authok\r\n' + status({ d1: 1 }), // status says still locked
+      'l=2': 'authok\r\n' + status({ d2: 1 }),
+      'm010': 'authok\r\n<pre>\r\nprev:\r\nweird\r\ncur:\r\nweird\r\n</pre>\r\n' // read-back not parseable
+    }
+    const server = createServer((req, res) => {
+      const cmd = ((req.url ?? '').split('?')[1] ?? '').split('&')[0]!
+      res.end(replies[cmd] ?? 'authok\r\n')
+    })
+    const warnings: string[] = []
+    const adapter = new OpenAccessAdapter(cfg(await listen(server)), { timeoutMs: 1000, onWarn: (m) => warnings.push(m) })
+    await adapter.open(1)
+    expect(warnings).toHaveLength(1)
+    await expect(adapter.unlock(1)).rejects.toBeInstanceOf(BadReply)
+    await adapter.lock(2)
+    await adapter.writeSlot(10, 1, 'AB')
+    expect(warnings).toHaveLength(2)
+    server.close()
+  })
+
+  it('refuses card-number reads when the firmware masks tags, but slot writes still work', async () => {
+    const board = fakeBoard({ debug: 1 })
+    const adapter = new OpenAccessAdapter(cfg(await listen(board)), 1000)
+    const change = await adapter.writeSlot(10, 1, 'ABCD')
+    expect(change.cur).toEqual({ slot: 10, mask: 1, tag: null, empty: false })
+    const { slots, masked } = await adapter.listSlots()
+    expect(masked).toBe(true)
+    expect(slots).toHaveLength(200)
+    expect(slots[10]).toEqual({ slot: 10, mask: 1, tag: null, empty: false })
+    expect(slots[11]).toEqual({ slot: 11, mask: 255, tag: null, empty: true })
+    await expect(adapter.listCards()).rejects.toBeInstanceOf(NotSupported)
+    const cleared = await adapter.clearSlot(10)
+    expect(cleared.cur).toEqual({ slot: 10, mask: 255, tag: null, empty: true })
+    board.close()
+  })
+
+  it('retries a connection the board refused or closed before replying (the command never ran)', async () => {
+    const { createServer: tcp } = await import('node:net')
+    let n = 0
+    const queries: string[] = []
+    const server = tcp((sock) => {
+      n += 1
+      if (n <= 2) return void sock.destroy() // like the board between loop() passes: nothing delivered
+      sock.once('data', (d) => {
+        queries.push(d.toString('latin1').split(' ')[1]!)
+        sock.end('HTTP/1.1 200 OK\r\nCache-Control: no-store\r\nContent-Type: text/html\r\n\r\nauthok\r\nOpened 1.')
+      })
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const { port } = server.address() as AddressInfo
+    const adapter = new OpenAccessAdapter(cfg(`http://127.0.0.1:${port}`), 1000)
+    await adapter.open(1)
+    expect(n).toBe(3)
+    expect(queries).toEqual(['/?o1&e=1234'])
+    server.close()
+  })
+
+  it('does not retry once the board has sent anything', async () => {
+    const { createServer: tcp } = await import('node:net')
+    let n = 0
+    const server = tcp((sock) => {
+      n += 1
+      sock.once('data', () => {
+        sock.write('HTTP/1.1 200 OK\r\nCache-')
+        setTimeout(() => sock.destroy(), 20)
+      })
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const { port } = server.address() as AddressInfo
+    const adapter = new OpenAccessAdapter(cfg(`http://127.0.0.1:${port}`), 1000)
+    await expect(adapter.unlock(1)).rejects.toBeInstanceOf(Unreachable)
+    expect(n).toBe(1)
+    server.close()
+  })
+
+  it('sends a short request: the firmware reads only the first 97 characters', async () => {
+    const { createServer: tcp } = await import('node:net')
+    let head = ''
+    const server = tcp((sock) => {
+      sock.once('data', (d) => {
+        head = d.toString('latin1')
+        sock.end('HTTP/1.1 200 OK\r\n\r\nauthok\r\n<pre>\r\nprev:\r\n10\t255\tFFFFFFFF\r\ncur:\r\n10\t1\t12ABCD\r\n</pre>\r\n')
+      })
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const { port } = server.address() as AddressInfo
+    const adapter = new OpenAccessAdapter(cfg(`http://127.0.0.1:${port}`), 1000)
+    await adapter.writeSlot(10, 1, '12abcd')
+    const seen = ('100' + head).slice(0, 100) // what the firmware keeps
+    expect(seen).toContain('?m010&p001&t0012ABCD&e=1234')
+    expect(head.startsWith('GET /?m010&p001&t0012ABCD&e=1234 HTTP/1.1\r\n')).toBe(true)
+    server.close()
+  })
+
+  it('maps a slow board to Unreachable, with no URL or password in the message', async () => {
+    const board = fakeBoard({ slow: true })
+    const adapter = new OpenAccessAdapter(cfg(await listen(board), 'abcd'), 300)
+    const err = await adapter.unlock(1).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(Unreachable)
+    expect((err as Error).message).not.toMatch(/abcd|127\.0\.0\.1|http/)
+    board.close()
+  })
+})
+
+describe('reply parsers', () => {
+  it('reads glued masked entries (an empty slot prints no line break)', () => {
+    const body = 'authok\r\n<pre>\r\nUserNum: Usermask: TagNum:\r\n0\t255\t1\t1\t********\r\n2\t255\t</pre>\r\n'
+    expect(parseSlotDump(body)).toEqual([
+      { slot: 0, mask: 255, tag: null, empty: true },
+      { slot: 1, mask: 1, tag: null, empty: false },
+      { slot: 2, mask: 255, tag: null, empty: true }
     ])
-    // ?9 must NOT carry &e= (firmware serves status unauthenticated)
-    expect(server.queries).toContain('9')
   })
 
-  it('lists enabled and disabled cards, skips empty slots', async () => {
-    const cards = await adapter.listCards()
-    expect(cards).toEqual([
-      { card: 0xff, doors: [1, 2] }, // enabled
-      { card: 0xbeef, doors: [] } // disabled -> present with no access
-    ])
+  it('reads a ?r reply, which has no closing </pre>', () => {
+    const c = parseSlotChange('authok\r\nr\r\n<pre>\r\nprev:\r\n10\t1\t12ABCD\r\ncur:\r\n10\t255\tFFFFFFFF\r\n')
+    expect(c).toEqual({
+      slot: 10,
+      prev: { slot: 10, mask: 1, tag: '12ABCD', empty: false },
+      cur: { slot: 10, mask: 255, tag: 'FFFFFFFF', empty: true }
+    })
   })
 
-  it('sends &e=PW on privileged commands', async () => {
-    await adapter.unlock(1)
-    expect(server.queries).toContain('u=1&e=1234')
-  })
-
-  it('writes a new card to a FREE slot, never over a disabled card', async () => {
-    const before = server.queries.length
-    await adapter.putCard({ card: 0x2611, doors: [1, 2] })
-    const modify = server.queries.slice(before).find((q) => q.startsWith('m'))
-    // slots 10 and 11 are occupied (11 is disabled but real), so the next free
-    // slot is 12... but 12/13 are empty -> 12. The disabled slot 11 is skipped.
-    expect(modify).toMatch(/^m012&p001&t00002611&e=1234/)
-  })
-
-  it('updates a disabled card in place (same slot) when re-added', async () => {
-    const before = server.queries.length
-    await adapter.putCard({ card: 0xbeef, doors: [1, 2] })
-    const modify = server.queries.slice(before).find((q) => q.startsWith('m'))
-    expect(modify).toMatch(/^m011&p001&t0000beef&e=1234/) // reuses slot 11
-  })
-
-  it('deletes a known card and 404s an unknown one', async () => {
-    await expect(adapter.deleteCard(0xff)).resolves.toBeUndefined()
-    await expect(adapter.deleteCard(0x999999)).rejects.toThrow(/not on this controller/)
-  })
-
-  it('parses the event buffer (best-effort, non-incremental)', async () => {
-    const page = await adapter.events(0, 10)
-    expect(page.events[0]).toMatchObject({ type: 'granted', card: 100, granted: true })
-    expect(page.events[1]).toMatchObject({ type: 'denied', card: 101 })
-  })
-
-  it('maps an unreachable/slow board to Unreachable', async () => {
-    const slow = fakeBoard({ slow: true })
-    const url = await listen(slow)
-    const slowAdapter = new OpenAccessAdapter(
-      { id: 'slow', driver: 'openaccess', url, password: '1234', doors: [1] },
-      300
-    )
-    await expect(slowAdapter.status()).rejects.toBeInstanceOf(Unreachable)
-    slow.close()
+  it('normalises tags the way upload_query pads them', () => {
+    expect(normaliseTag('12abcd')).toBe('0012ABCD')
+    expect(() => normaliseTag('')).toThrow()
+    expect(() => normaliseTag('ffffffff')).toThrow()
   })
 })

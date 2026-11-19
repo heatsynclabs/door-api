@@ -1,9 +1,11 @@
 // A thin wrapper over opossum: one breaker per controller. Its job is to stop
 // hammering a controller that is already failing (fast-fail with CircuitOpen once
-// too many calls fail), and to report state for the health check. Per-call
-// timeouts live in the adapters, so opossum's own timeout is disabled here.
+// too many calls fail), and to report state for status. Per-call timeouts live in
+// the adapters, so opossum's own timeout is disabled here. Only Unreachable (no
+// answer) counts as a failure: a refused password, a bad request or a policy
+// refusal says nothing about whether the board is up.
 import CircuitBreaker from 'opossum'
-import { CircuitOpen } from './errors.js'
+import { CircuitOpen, Unreachable } from './errors.js'
 
 export interface GuardConfig {
   enabled: boolean
@@ -30,7 +32,9 @@ export function makeGuard(name: string, cfg: GuardConfig): Guard {
     timeout: false, // adapters own their timeouts
     errorThresholdPercentage: cfg.errorThresholdPercentage,
     resetTimeout: cfg.resetTimeout,
-    volumeThreshold: cfg.volumeThreshold
+    volumeThreshold: cfg.volumeThreshold,
+    // true = do not count this error as a failure
+    errorFilter: (err: unknown) => !(err instanceof Unreachable)
   })
 
   return {
@@ -39,7 +43,7 @@ export function makeGuard(name: string, cfg: GuardConfig): Guard {
       try {
         return (await breaker.fire(thunk)) as T
       } catch (err) {
-        if (breaker.opened) throw new CircuitOpen()
+        if (breaker.opened && err instanceof Unreachable) throw new CircuitOpen()
         throw err
       }
     },

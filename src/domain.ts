@@ -34,7 +34,10 @@ export const ControllerStatusSchema = Type.Object(
     driver: Type.String(),
     online: Type.Boolean(),
     doors: Type.Array(DoorStateSchema),
-    details: Type.Optional(Type.Record(Type.String(), Type.Unknown()))
+    details: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+    circuit: Type.Optional(Type.String()),
+    // Set while privileged calls are paused after the board refused the password.
+    auth_paused_until: Type.Optional(Type.Union([Type.String(), Type.Null()]))
   }
 )
 export type ControllerStatus = Static<typeof ControllerStatusSchema>
@@ -58,6 +61,23 @@ export interface EventPage {
   last: number
 }
 
+// One slot of a board that keys cards by slot (the Open Access Arduino).
+// tag is the card number in upper-case hex as the board prints it, or null
+// when the firmware masks tags (DEBUG below 2). empty is true for a cleared slot.
+export interface SlotEntry {
+  slot: number
+  mask: number
+  tag: string | null
+  empty: boolean
+}
+
+// The board's own before-and-after view of a slot write.
+export interface SlotChange {
+  slot: number
+  prev: SlotEntry | null
+  cur: SlotEntry | null
+}
+
 // The one interface every controller driver implements. Methods throw the typed
 // errors in errors.ts (Unreachable, NotFound, BadRequest); the route layer turns
 // those into HTTP responses.
@@ -78,4 +98,19 @@ export interface ControllerAdapter {
   deleteCard(card: number): Promise<void>
 
   events(after: number, limit: number): Promise<EventPage>
+
+  // Optional, for boards that have them. Routes answer 400 not_supported when
+  // an adapter lacks one; lockAll/unlockAll fall back to one call per door.
+  lockAll?(): Promise<void>
+  unlockAll?(): Promise<void>
+  arm?(): Promise<void>
+  disarm?(): Promise<void>
+  listSlots?(): Promise<{ slots: SlotEntry[]; masked: boolean }>
+  writeSlot?(slot: number, mask: number, tag: string): Promise<SlotChange>
+  clearSlot?(slot: number): Promise<SlotChange>
+  // The board's raw event buffer and clearing it (the legacy import pair).
+  readLog?(): Promise<string>
+  clearLog?(): Promise<void>
+  // Whether privileged calls are paused after a refused password.
+  authPausedUntil?(): number | null
 }

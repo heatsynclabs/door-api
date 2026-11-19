@@ -1,0 +1,18 @@
+diff --git a/simavr/sim/avr_adc.c b/simavr/sim/avr_adc.c
+index 425d5d3..d48539d 100644
+--- a/simavr/sim/avr_adc.c
++++ b/simavr/sim/avr_adc.c
+@@ -307,8 +307,12 @@ avr_adc_write_adcsra(
+ 			AVR_LOG(avr, LOG_TRACE, "ADC: starting at %uKHz\n",
+                                 (avr->frequency >> div) / 13 / 100);
+ 		div = (1 << div);
+-		div *= (p->first ? 14 : 2);	// first conversion is longer
++		/* One ADC clock in CPU cycles: the result is ready 11 ADC
++		 * clocks after the sample point, so a normal conversion takes
++		 * 2 + 11 = 13 ADC clocks and the first one 14 + 11 = 25,
++		 * as in the ATmega328P datasheet timing table. */
+                 p->current_prescale = div;
++		div *= (p->first ? 14 : 2);	// first conversion is longer
+                 avr_cycle_timer_register(avr, div, avr_adc_convert, p);
+                 p->current_extras.bipolar =
+                         p->bin.reg && avr_regbit_get(avr, p->bin);
