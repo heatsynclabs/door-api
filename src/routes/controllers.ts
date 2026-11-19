@@ -319,7 +319,7 @@ export const controllerRoutes: FastifyPluginAsyncTypebox<RouteDeps> = async (app
           const entry: DrainEntry = {
             drain_id: journal.newId(),
             controller: controller.id,
-            taken_at: new Date().toISOString(),
+            taken_at: journal.stamp(),
             raw: await adapter.readLog!(),
             cleared: false
           }

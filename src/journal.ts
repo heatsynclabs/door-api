@@ -24,6 +24,15 @@ export class Journal {
 
   constructor(private readonly dir: string | null) {}
 
+  private lastStamp = 0
+
+  // A taken_at for a new drain, strictly later than the previous one, so drains
+  // always come back in the order they were taken.
+  stamp(): string {
+    this.lastStamp = Math.max(Date.now(), this.lastStamp + 1)
+    return new Date(this.lastStamp).toISOString()
+  }
+
   get durable(): boolean {
     return this.dir != null
   }
