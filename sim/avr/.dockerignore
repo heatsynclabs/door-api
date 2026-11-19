@@ -1,0 +1,4 @@
+test/
+*.md
+door-sim
+src/*.o
