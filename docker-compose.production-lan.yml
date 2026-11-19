@@ -10,12 +10,8 @@
 # service without door-lan; it reaches the board over the LAN). The two files
 # differ only in the door-lan network: test/compose.test.ts checks that.
 #
-# One-time host setup (sudo, on the R610), from the operations folder's
-# door cutover kit:
-#   eno2 up with no address (netplan), then
-#   docker network create --internal door-net
-#   docker network create -d macvlan --subnet 172.22.110.0/24 --gateway 172.22.110.1 \
-#     --ip-range 172.22.110.240/30 -o parent=eno2 door-lan
+# The networks are defined at the bottom of this file and created by Coolify on
+# deploy: door-net (internal) and door-lan (macvlan on eno2).
 #
 # Members reaches this as http://door-api-prod:3000 over door-net. The only
 # host port is on the R610's loopback (127.0.0.1:3002), for operators.
@@ -57,6 +53,8 @@ volumes:
   door-api-data:
 
 networks:
+  # Created and kept by this app (Coolify runs Docker as root, so no host setup
+  # is needed). Members production joins door-net as an external network.
   door-net:
-    external: true
     name: door-net
+    internal: true

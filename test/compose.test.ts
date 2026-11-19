@@ -7,7 +7,7 @@ import { readFileSync } from 'node:fs'
 const body = (file: string) =>
   readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
     .split('\n')
-    .filter((l) => !l.startsWith('#'))
+    .filter((l) => !l.trimStart().startsWith('#'))
     .join('\n')
 
 describe('production compose files', () => {
@@ -16,10 +16,11 @@ describe('production compose files', () => {
     const lan = body('docker-compose.production-lan.yml')
     const stripped = isolated
       .replace('      door-lan:\n        ipv4_address: 172.22.110.240\n', '')
-      .replace('  door-lan:\n    external: true\n    name: door-lan\n', '')
+      .replace(/  door-lan:\n    name: door-lan\n[\s\S]*$/, '')
     expect(stripped).toBe(lan)
     expect(isolated).toContain('ipv4_address: 172.22.110.240')
     expect(lan).not.toContain('door-lan')
+    expect(isolated).toContain('parent: eno2')
   })
 
   it('keep the board password out of the controller JSON and publish only on loopback', () => {
