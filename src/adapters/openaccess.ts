@@ -28,6 +28,7 @@ import type {
   SlotChange,
   SlotEntry
 } from '../domain.js'
+import { request as httpRequest } from 'node:http'
 import type { ControllerConfig } from '../config.js'
 import { BadReply, BadRequest, BoardAuthFailed, CapacityFull, NotFound, NotSupported, Unreachable } from '../errors.js'
 
@@ -89,17 +90,27 @@ export class OpenAccessAdapter implements ControllerAdapter {
     this.onWarn = opts.onWarn ?? (() => undefined)
   }
 
+  // One HTTP request to the board. The firmware keeps a single socket listening
+  // and, after each reply, spends one pass of loop() (80 to 160 ms of sensor
+  // polling) before listening again: a connection in that window is refused.
+  // A refused connection, or one closed before the board sent a single byte,
+  // never ran the command (the firmware prints its HTTP header before acting),
+  // so exactly those are retried, for up to 2 s. Anything after the first byte
+  // is never retried.
   private async get(query: string, timeoutMs = this.timeout): Promise<string> {
-    try {
-      const res = await fetch(`${this.baseUrl}/?${query}`, {
-        signal: AbortSignal.timeout(timeoutMs),
-        headers: { 'User-Agent': 'door-api' }
-      })
-      return await res.text()
-    } catch (err) {
-      // Never pass the error text on: it could carry the URL, and the URL the password.
-      const kind = (err as Error).name === 'TimeoutError' ? 'timed out' : 'did not answer'
-      throw new Unreachable(`open access board ${kind}`)
+    const deadline = this.now() + Math.max(timeoutMs, 2_000)
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await boardRequest(this.baseUrl, query, timeoutMs)
+      } catch (err) {
+        const e = err as BoardRequestError
+        if (e.notDelivered && this.now() + 50 < deadline && attempt < 40) {
+          await new Promise((r) => setTimeout(r, 50))
+          continue
+        }
+        // Never pass the error text on: it could carry the URL, and the URL the password.
+        throw new Unreachable(`open access board ${e.timedOut ? 'timed out' : 'did not answer'}`)
+      }
     }
   }
 
@@ -398,4 +409,60 @@ export function parseSlotChange(body: string): SlotChange {
   const prev = readEntry(body, p + 'prev:\r\n'.length)?.entry ?? null
   const cur = readEntry(body, c + 'cur:\r\n'.length)?.entry ?? null
   return { slot: cur?.slot ?? prev?.slot ?? -1, prev, cur }
+}
+
+interface BoardRequestError extends Error {
+  notDelivered?: boolean
+  timedOut?: boolean
+}
+
+// GET /?<query> with the fewest header bytes: the firmware keeps only the first
+// 97 characters of the request (its String starts as "100"), and parses the
+// query out of them. No keep-alive: the board closes after every reply.
+function boardRequest(baseUrl: string, query: string, timeoutMs: number): Promise<string> {
+  const url = new URL(baseUrl)
+  return new Promise((resolve, reject) => {
+    let gotBytes = false
+    let settled = false
+    const fail = (err: BoardRequestError) => {
+      if (settled) return
+      settled = true
+      reject(err)
+    }
+    const req = httpRequest(
+      {
+        host: url.hostname,
+        port: url.port || 80,
+        path: `/?${query}`,
+        method: 'GET',
+        agent: false,
+        headers: { Connection: 'close' },
+        setHost: true
+      },
+      (res) => {
+        gotBytes = true
+        const chunks: Buffer[] = []
+        res.on('data', (c: Buffer) => chunks.push(c))
+        res.on('end', () => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve(Buffer.concat(chunks).toString('latin1'))
+        })
+        res.on('error', (err) => fail(Object.assign(err, { notDelivered: false })))
+      }
+    )
+    const timer = setTimeout(() => {
+      req.destroy()
+      fail(Object.assign(new Error('timeout'), { timedOut: true, notDelivered: false }))
+    }, timeoutMs)
+    req.on('socket', (sock) => sock.on('data', () => (gotBytes = true)))
+    req.on('error', (err: NodeJS.ErrnoException) => {
+      clearTimeout(timer)
+      const refused = err.code === 'ECONNREFUSED'
+      const closedEarly = (err.code === 'ECONNRESET' || err.message === 'socket hang up') && !gotBytes
+      fail(Object.assign(err, { notDelivered: refused || closedEarly }))
+    })
+    req.end()
+  })
 }

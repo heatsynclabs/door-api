@@ -238,6 +238,64 @@ describe('OpenAccessAdapter safety', () => {
     board.close()
   })
 
+  it('retries a connection the board refused or closed before replying (the command never ran)', async () => {
+    const { createServer: tcp } = await import('node:net')
+    let n = 0
+    const queries: string[] = []
+    const server = tcp((sock) => {
+      n += 1
+      if (n <= 2) return void sock.destroy() // like the board between loop() passes: nothing delivered
+      sock.once('data', (d) => {
+        queries.push(d.toString('latin1').split(' ')[1]!)
+        sock.end('HTTP/1.1 200 OK\r\nCache-Control: no-store\r\nContent-Type: text/html\r\n\r\nauthok\r\nOpened 1.')
+      })
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const { port } = server.address() as AddressInfo
+    const adapter = new OpenAccessAdapter(cfg(`http://127.0.0.1:${port}`), 1000)
+    await adapter.open(1)
+    expect(n).toBe(3)
+    expect(queries).toEqual(['/?o1&e=1234'])
+    server.close()
+  })
+
+  it('does not retry once the board has sent anything', async () => {
+    const { createServer: tcp } = await import('node:net')
+    let n = 0
+    const server = tcp((sock) => {
+      n += 1
+      sock.once('data', () => {
+        sock.write('HTTP/1.1 200 OK\r\nCache-')
+        setTimeout(() => sock.destroy(), 20)
+      })
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const { port } = server.address() as AddressInfo
+    const adapter = new OpenAccessAdapter(cfg(`http://127.0.0.1:${port}`), 1000)
+    await expect(adapter.unlock(1)).rejects.toBeInstanceOf(Unreachable)
+    expect(n).toBe(1)
+    server.close()
+  })
+
+  it('sends a short request: the firmware reads only the first 97 characters', async () => {
+    const { createServer: tcp } = await import('node:net')
+    let head = ''
+    const server = tcp((sock) => {
+      sock.once('data', (d) => {
+        head = d.toString('latin1')
+        sock.end('HTTP/1.1 200 OK\r\n\r\nauthok\r\n<pre>\r\nprev:\r\n10\t255\tFFFFFFFF\r\ncur:\r\n10\t1\t12ABCD\r\n</pre>\r\n')
+      })
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const { port } = server.address() as AddressInfo
+    const adapter = new OpenAccessAdapter(cfg(`http://127.0.0.1:${port}`), 1000)
+    await adapter.writeSlot(10, 1, '12abcd')
+    const seen = ('100' + head).slice(0, 100) // what the firmware keeps
+    expect(seen).toContain('?m010&p001&t0012ABCD&e=1234')
+    expect(head.startsWith('GET /?m010&p001&t0012ABCD&e=1234 HTTP/1.1\r\n')).toBe(true)
+    server.close()
+  })
+
   it('maps a slow board to Unreachable, with no URL or password in the message', async () => {
     const board = fakeBoard({ slow: true })
     const adapter = new OpenAccessAdapter(cfg(await listen(board), 'abcd'), 300)
