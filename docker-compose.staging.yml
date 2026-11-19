@@ -1,27 +1,21 @@
 # Staging on Coolify (the lab's R610): app door-api-staging, branch `staging`,
 # auto-deploys on every push to that branch. LAN, Ops VPN and tailnet only:
 #   door-api   http://172.22.110.200:3001  (docs at /docs, health at /health)
-#   simulator  http://172.22.110.200:9099  (a fake Open Access board; /sim/*)
+#   board      http://172.22.110.200:9099  (the board's HTTP protocol)
+#   control    the emulator's control API, 127.0.0.1:9199 on the R610 only
 # How staging and production deploy, and how to ship a change: README.md,
 # "Staging and production".
 #
-# The members staging site (members repo, docker-compose.staging.yml) sends its
-# door actions here with DOOR_API_URL, DOOR_API_KEY and DOOR_CONTROLLER=front.
+# Since the door cutover, staging never talks to the real board: production
+# door-api is the board's only client, on its own segment. Staging's one
+# controller, `front`, is the board's real compiled firmware running under
+# simavr (sim/avr), so everything members staging does (doors, cards, the log
+# import, the alarm) behaves exactly as on the board, with nothing at stake.
 #
-# Controllers:
-#   front  the REAL front door board (172.22.110.99), the same board production
-#          members drives. Not a sandbox, so with DOOR_JOBS=off it only takes
-#          status, open, unlock and lock. The event log and every card read or
-#          write are refused (409 door_jobs_off): production owns those.
-#   sim    the simulator, a sandbox: everything works, for card and log tests.
-#
-# DOOR_JOBS is "off", written in this file so it cannot be switched on from
-# Coolify. Changing the controller list is a reviewed commit here, never a quick
-# edit in a dashboard.
-#
-# BOARD_PASSWORD must be exactly production's DOOR_ACCESS_PASSWORD. A wrong one
-# fails the board's login, and after 5 failures the board refuses every login
-# for 5 minutes, production's included.
+# The emulator's password is the firmware default 1234: it guards nothing. It is
+# built from heatsynclabs/door-controller-platformio at FIRMWARE_REF.
+# DOOR_JOBS stays "off" (literal here): staging must never be able to run jobs
+# against a real board, should one ever be added to this list.
 #
 # Values in ${...} come from the Coolify resource's environment variables.
 services:
@@ -37,7 +31,12 @@ services:
       NODE_ENV: production
       DOOR_JOBS: "off"
       API_KEYS: ${API_KEYS}
-      CONTROLLERS_JSON: '[{"id":"front","driver":"openaccess","url":"http://172.22.110.99","password":"${BOARD_PASSWORD}","doors":[1,2]},{"id":"sim","driver":"openaccess","url":"http://door-sim:9099","password":"${SIM_PASSWORD}","doors":[1,2],"sandbox":true}]'
+      CONTROLLER_PASSWORD_FRONT: "1234"
+      CONTROLLERS_JSON: '[{"id":"front","driver":"openaccess","url":"http://door-sim:80","doors":[1,2],"sandbox":true}]'
+      JOURNAL_DIR: /data/journal
+      AUDIT_FILE: /data/audit/door-actions.log
+    volumes:
+      - door-api-staging-data:/data
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
@@ -46,10 +45,19 @@ services:
 
   door-sim:
     build:
-      context: ./sim
+      context: ./sim/avr
+      args:
+        PASSWORD: "0x1234"
     restart: unless-stopped
     ports:
-      - "9099:9099"
+      - "9099:80"
+      - "127.0.0.1:9199:9199"
     environment:
-      PORT: "9099"
-      PASSWORD: ${SIM_PASSWORD}
+      TZ: America/Phoenix
+      EEPROM_FILE: /data/eeprom.bin
+    volumes:
+      - door-sim-eeprom:/data
+
+volumes:
+  door-api-staging-data:
+  door-sim-eeprom:
